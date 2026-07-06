@@ -7,16 +7,6 @@
 
 import Foundation
 
-// MARK: - StoryType
-public enum StoryType: Equatable, Hashable {
-    case plain(config: StoryInteractionConfig? = nil)
-    case message(
-        config: StoryInteractionConfig? = nil,
-        emojis: [[String]]? = nil,
-        placeholder: String
-    )
-}
-
 // MARK: - StoryUIMediaType
 public enum StoryUIMediaType: Equatable {
     case image

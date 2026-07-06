@@ -9,14 +9,12 @@ import Foundation
 
 public struct StoryUIModel: Identifiable, Hashable {
     public var id: String
-    public var user: StoryUIUser
     public var isSeen: Bool = false
     public var stories: [Story]
-    
-    public init(id: String = UUID().uuidString, user: StoryUIUser, isSeen: Bool = false, stories: [Story]) {
+
+    public init(id: String = UUID().uuidString, isSeen: Bool = false, stories: [Story]) {
         self.id = id
-        self.user = user
         self.isSeen = isSeen
         self.stories = stories
-    }    
+    }
 }

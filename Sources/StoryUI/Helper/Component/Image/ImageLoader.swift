@@ -13,7 +13,7 @@ final class ImageLoader: UIView {
     // MARK: Public Properties
     var imageURL: URL?
     var imageView = UIImageView()
-    let activityIndicator = UIActivityIndicatorView(style: .large)
+    let activityIndicator = UIActivityIndicatorView(style: .medium)
     
      // MARK: - Initializers
     init() {

@@ -27,6 +27,7 @@ struct ProgressBarView: View {
                     
                     ,alignment: .leading
                 )
-        }.frame(height: Constant.progressBarHeight)
+        }
+        .frame(height: Constant.progressBarHeight)
     }
 }

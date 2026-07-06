@@ -8,63 +8,71 @@
 import SwiftUI
 import AVFoundation
 
-public struct StoryView: View {
-    
+public struct StoryView<Footer: View>: View {
+
     @StateObject private var viewModel = StoryViewModel()
     @Binding private var isPresented: Bool
-    
+    private var isPaused: Binding<Bool>
+
     // Private properties
     private var stories: [StoryUIModel]
     private var selectedIndex: Int
- 
-    // Public properties
-    let userClosure: UserCompletionHandler?
-    
-    
+    private var footer: (StoryUIModel) -> Footer
+
     /// Stories and isPresented required, selectedIndex is optional default: 0
     /// - Parameters:
     ///   - stories: all stories to show
     ///   - selectedIndex: current story index selected by user
     ///   - isPresented: to hide and show for closing storyView
+    ///   - isPaused: pauses the auto-advance timer and video playback, e.g. while the host presents a sheet on top of the story
+    ///   - footer: host-supplied overlay rendered at the bottom of the currently visible story
     public init(
         stories: [StoryUIModel],
         selectedIndex: Int = 0,
         isPresented: Binding<Bool>,
-        userClosure: UserCompletionHandler? = nil
+        isPaused: Binding<Bool> = .constant(false),
+        @ViewBuilder footer: @escaping (StoryUIModel) -> Footer
     ) {
         self.stories = stories
         self.selectedIndex = selectedIndex
         self._isPresented = isPresented
-        self.userClosure = userClosure
+        self.isPaused = isPaused
+        self.footer = footer
     }
-    
+
     public var body: some View {
         if isPresented {
             ZStack {
-                Color.black.ignoresSafeArea()
+                Color.black
                 TabView(selection: $viewModel.currentStoryUser) {
                     ForEach(viewModel.stories) { model in
                         StoryDetailView(
                             viewModel: viewModel,
                             model: model,
                             isPresented: $isPresented,
-                            userClosure: userClosure
+                            isPaused: isPaused
                         )
                     }
                 }
+                VStack {
+                    Spacer()
+                    if let model = viewModel.getStoryModel() {
+                        footer(model)
+                    }
+                }
             }
-            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .ignoresSafeArea()
             .tabViewStyle(.page(indexDisplayMode: .never))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear() {
                 startStory()
             }
             .onDisappear() {
-               stopVideo()
+                stopVideo()
             }
         }
     }
-    
+
     private func startStory() {
         guard !stories.isEmpty else { return }
 
@@ -83,5 +91,21 @@ public struct StoryView: View {
     private func stopVideo() {
         NotificationCenter.default.post(name: .stopVideo, object: nil)
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+public extension StoryView where Footer == EmptyView {
+    init(
+        stories: [StoryUIModel],
+        selectedIndex: Int = 0,
+        isPresented: Binding<Bool>,
+        isPaused: Binding<Bool> = .constant(false)
+    ) {
+        self.init(
+            stories: stories,
+            selectedIndex: selectedIndex,
+            isPresented: isPresented,
+            isPaused: isPaused
+        ) { _ in EmptyView() }
     }
 }

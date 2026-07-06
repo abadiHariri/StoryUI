@@ -22,13 +22,13 @@ final class PlayerView: UIView {
     // MARK: Private Properties
     private let playerLayer = AVPlayerLayer()
     private var url: URL?
-    private let cacheManager: CacheManager
+    private let cacheManager: StoryVideoCacheManager
 
     private var observation: NSKeyValueObservation?
 
     // MARK: - Initializers
     override init(frame: CGRect) {
-        self.cacheManager = CacheManager()
+        self.cacheManager = StoryVideoCacheManager()
         super.init(frame: frame)
         self.layer.cornerRadius = 12
         self.clipsToBounds = true

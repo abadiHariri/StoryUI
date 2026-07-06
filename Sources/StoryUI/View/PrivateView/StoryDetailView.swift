@@ -14,35 +14,22 @@ struct StoryDetailView: View {
 
     @State var model: StoryUIModel
     @Binding var isPresented: Bool
-    
+    @Binding var isPaused: Bool
+
     @State var timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
     @State var timerProgress: CGFloat = 0
 
-    
-    let userClosure: UserCompletionHandler?
-    
     // MARK: Private Properties
     @ObservedObject private var keyboardManager = KeyboardManager()
     @State private var state: MediaState = .notStarted
     @State private var player = AVPlayer()
     @State private var animate = false
-    @State private var selectedEmoji = ""
     @State private var startAnimate = false
     @State private var isTimerRunning: Bool = false
-    @State private var isAnimationStarted: Bool = false
     @State private var isTapDisabled: Bool = false
-    @State private var showEmoji: Bool = true
 
-    private var messageViewPosition: CGFloat {
-        return -keyboardManager.currentHeight
-    }
-    
-    private var emojiViewPosition: CGFloat {
-        return (messageViewPosition * 1.5)
-    }
-    
     var body: some View {
-        
+
         GeometryReader { proxy in
             let index = getCurrentIndex()
             let story = model.stories[index]
@@ -52,19 +39,14 @@ struct StoryDetailView: View {
                         getStoryView(with: index, story: story)
                             .overlay(
                                 tapStory()
-                                    .offset(
-                                        y: story.config.storyType != .plain()
-                                        ? -Constant.MessageView.height : .zero
-                                    )
                             )
-                        messageView(with: index)
                     }
                 }
-                getEmojiView(story: story)
             }
+            .ignoresSafeArea()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .overlay(
-                getUserInfoAndProgressBar(with: index)
+                getProgressBar(with: index)
                 ,alignment: .top
             )
             .rotation3DEffect(
@@ -82,7 +64,7 @@ struct StoryDetailView: View {
         .onReceive(timer) { _ in
             startProgress()
         }
-        .onChange(of: isAnimationStarted ? isAnimationStarted : false) { state in
+        .onChange(of: isPaused) { state in
             configureProgress(with: state)
             isTimerRunning = state
         }
@@ -91,7 +73,7 @@ struct StoryDetailView: View {
 
 // MARK: Private Configuration
 private extension StoryDetailView {
-    
+
     @ViewBuilder
     func getStoryView(with index: Int, story: Story) -> some View {
         switch story.config.mediaType {
@@ -117,47 +99,10 @@ private extension StoryDetailView {
             }
         }
     }
-    
+
     @ViewBuilder
-    func getEmojiView(story: Story) -> some View {
-        let index = getCurrentIndex()
-        switch story.config.storyType {
-        case .message(_, let emojis, _):
-            if let emojis, showEmoji {
-                VStack {
-                    Spacer()
-                    EmojiView(
-                        story: getStory(with: index),
-                        emojiArray: emojis,
-                        startAnimating: $startAnimate,
-                        selectedEmoji: $selectedEmoji,
-                        userClosure: userClosure
-                    )
-                    .animation(messageViewPosition == 0 ? .none : .easeOut)
-                    .offset(y: emojiViewPosition)
-                    .opacity(messageViewPosition == 0 ? 0 : 1)
-                }
-                
-                if startAnimate {
-                    EmojiReactionView(
-                        dissmis: $startAnimate,
-                        isAnimationStarted: $isAnimationStarted,
-                        emoji: selectedEmoji
-                    )
-                }
-                
-            }
-        case .plain:
-            Divider()
-        }
-    }
-    
-    @ViewBuilder
-    func getUserInfoAndProgressBar(with index: Int) -> some View {
-        let date = getStory(with: index).date
-        let name = model.user.name
-        let image = model.user.image
-        VStack {
+    func getProgressBar(with index: Int) -> some View {
+        VStack(spacing: 0) {
             HStack(spacing: Constant.progressBarSpacing) {
                 ForEach(model.stories.indices) { index in
                     ProgressBarView(
@@ -166,31 +111,30 @@ private extension StoryDetailView {
                     )
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            UserView(
-                image: image,
-                name: name,
-                date: date,
-                isPresented: $isPresented
-            )
+            .padding(.horizontal, 16)
+
+            closeIcon()
         }
     }
-    
+
     @ViewBuilder
-    func messageView(with index: Int) -> some View {
-        let story = getStory(with: index)
-        
-        MessageView(
-            story: story,
-            showEmoji: $showEmoji,
-            userClosure: userClosure
-        )
-        .padding()
-        .animation(messageViewPosition == 0 ? .none : .easeOut)
-        .offset(y: messageViewPosition)
+    func closeIcon() -> some View {
+        HStack {
+            Spacer()
+            Button {
+                isPresented.toggle()
+            } label: {
+                Image(systemName: "xmark")
+                    .renderingMode(.template)
+                    .foregroundColor(.white)
+                    .frame(width: 24, height: 24)
+                    .padding(.horizontal, 8)
+                    .padding(.top)
+            }
+        }
     }
-    
+
+
     @ViewBuilder
     func tapStory() -> some View {
         HStack {
@@ -206,26 +150,26 @@ private extension StoryDetailView {
                 }
         }
     }
-    
+
     func getAngle(proxy: GeometryProxy) -> Angle {
         let rotation: CGFloat = 45
         let progress = proxy.frame(in: .global).minX / proxy.size.width
         let degrees = rotation * progress
         return Angle(degrees: degrees)
     }
-    
+
     func resetProgress() {
         timerProgress = 0
     }
-    
+
     func getPreviousStory() {
-        
+
         if let first = viewModel.stories.first, first.id != model.id {
 
             let bundleIndex = viewModel.stories.firstIndex { currentBundle in
                 return model.id == currentBundle.id
             } ?? 0
-            
+
             withAnimation {
                 viewModel.currentStoryUser = viewModel.stories[bundleIndex - 1].id
             }
@@ -239,11 +183,11 @@ private extension StoryDetailView {
         }
         return
     }
-    
+
     func getNextStory() {
         let index = getCurrentIndex()
         let story = getStory(with: index)
-        
+
         if let last = model.stories.last, last.id == story.id {
             if let lastBundle = viewModel.stories.last, lastBundle.id == model.id {
                 withAnimation {
@@ -253,20 +197,20 @@ private extension StoryDetailView {
                 let bundleIndex = viewModel.stories.firstIndex { currentBundle in
                     return model.id == currentBundle.id
                 } ?? 0
-                
+
                 withAnimation {
                     viewModel.currentStoryUser = viewModel.stories[bundleIndex + 1].id
                 }
             }
         }
     }
-    
+
     func startProgress() {
         guard !isTimerRunning else { return }
-        
+
         let index = getCurrentIndex()
         let story = getStory(with: index)
-        
+
         if viewModel.currentStoryUser == model.id {
             if !model.isSeen {
                 model.isSeen = true
@@ -280,7 +224,7 @@ private extension StoryDetailView {
             }
         }
     }
-    
+
     func updateStory(direction: StoryDirectionEnum = .next) {
         if direction == .previous {
             getPreviousStory()
@@ -288,7 +232,7 @@ private extension StoryDetailView {
             getNextStory()
         }
     }
-    
+
     func tapNextStory() {
         configureTapScreen()
         guard !isTapDisabled else { return }
@@ -300,7 +244,7 @@ private extension StoryDetailView {
             timerProgress = CGFloat(Int(timerProgress + 1))
         }
     }
-    
+
     func tapPreviousStory() {
         configureTapScreen()
         guard !isTapDisabled else { return }
@@ -310,48 +254,48 @@ private extension StoryDetailView {
             timerProgress = CGFloat(Int(timerProgress - 1))
         }
     }
-    
+
     func start(index: Int) {
         if !model.stories[index].isReady {
             model.stories[index].isReady = true
         }
     }
-    
+
     func getProgressBarFrame(duration: Double) {
         let calculatedDuration = viewModel.getVideoProgressBarFrame(duration: duration)
         timerProgress += (0.01 / calculatedDuration)
     }
-    
+
     func dissmis() {
         isPresented = false
         NotificationCenter.default.post(name: .replaceCurrentItem, object: nil)
     }
-    
+
     func getCurrentIndex() -> Int {
         return min(Int(timerProgress), model.stories.count - 1)
     }
-    
+
     func getStory(with index: Int) -> Story {
         return model.stories[index]
     }
-    
+
     func resetAVPlayer() {
         Task {
             player.pause()
         }
         player = AVPlayer()
     }
-    
+
     func pauseVideo() {
         player.pause()
     }
-    
+
     func playVideo() {
         let index = getCurrentIndex()
         let currentUser = viewModel.currentStoryUser == model.id
         let video = model.stories[index].config.mediaType == .video
         let isReady = state == .ready || state == .started
-        
+
         if isReady, currentUser, video {
             player.automaticallyWaitsToMinimizeStalling = false
             Task {
@@ -359,9 +303,9 @@ private extension StoryDetailView {
             }
         }
     }
-    
+
     func configureTapScreen() {
-        switch (keyboardManager.isKeyboardOpen, isAnimationStarted) {
+        switch (keyboardManager.isKeyboardOpen, isPaused) {
         case (true, _):
             isTapDisabled = true
         case (false, true):
@@ -370,7 +314,7 @@ private extension StoryDetailView {
             isTapDisabled = false
         }
     }
-    
+
     func configureProgress(with state: Bool) {
         let index = getCurrentIndex()
         let story = model.stories[index]

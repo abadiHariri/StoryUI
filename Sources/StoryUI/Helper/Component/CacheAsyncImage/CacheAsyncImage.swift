@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct CacheAsyncImage: View {
     @ObservedObject var urlImageModel: UrlImageModel

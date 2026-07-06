@@ -1,5 +1,5 @@
 //
-//  CacheManager.swift
+//  StoryVideoCacheManager.swift
 //  StoryUI (iOS)
 //
 //  Created by Tolga İskender on 30.04.2022.
@@ -7,16 +7,16 @@
 
 @preconcurrency import AVFoundation
 
-public enum Result<T> {
+enum CacheOutcome<T> {
     case success(T)
     case failure(String)
 }
 
-final class CacheManager: NSObject {
+final class StoryVideoCacheManager: NSObject {
 
     private let fileManager = FileManager.default
 
-    func loadVideo(from url: URL, completion: @escaping (Result<URL>) -> Void) {
+    func loadVideo(from url: URL, completion: @escaping (CacheOutcome<URL>) -> Void) {
         switch createCacheDirectory() {
         case .success(let cacheDirectory):
             let videoFileName = url.lastPathComponent
@@ -37,9 +37,9 @@ final class CacheManager: NSObject {
 
 extension FileManager: @unchecked @retroactive Sendable {}
 
-private extension CacheManager {
+private extension StoryVideoCacheManager {
 
-    func createCacheDirectory() -> Result<URL> {
+    func createCacheDirectory() -> CacheOutcome<URL> {
         guard let cacheDirectory = fileManager.urls(
             for: .cachesDirectory,
             in: .userDomainMask
@@ -68,7 +68,7 @@ private extension CacheManager {
         return .success(videoCacheDirectory)
     }
 
-    func downloadAndCacheVideo(from url: URL, completion: @escaping (Result<URL>) -> Void) {
+    func downloadAndCacheVideo(from url: URL, completion: @escaping (CacheOutcome<URL>) -> Void) {
         let backgroundQueue = DispatchQueue.global(qos: .background)
 
         backgroundQueue.async { [weak self] in
@@ -127,7 +127,7 @@ private extension CacheManager {
 }
 
 
-extension CacheManager: URLSessionDelegate {
+extension StoryVideoCacheManager: URLSessionDelegate {
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
