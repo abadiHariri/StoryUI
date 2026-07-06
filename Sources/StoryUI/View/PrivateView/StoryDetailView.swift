@@ -25,7 +25,7 @@ struct StoryDetailView: View {
     @State private var player = AVPlayer()
     @State private var animate = false
     @State private var startAnimate = false
-    @State private var isTimerRunning: Bool = false
+    @State private var lastAppliedPauseState: Bool = false
     @State private var isTapDisabled: Bool = false
 
     var body: some View {
@@ -62,11 +62,15 @@ struct StoryDetailView: View {
             playVideo()
         }
         .onReceive(timer) { _ in
+            // Checked every tick (rather than relying solely on onChange(of:))
+            // since isPaused is often a computed Binding crossing into the
+            // custom fullscreen window, where onChange doesn't reliably fire.
+            if isPaused != lastAppliedPauseState {
+                lastAppliedPauseState = isPaused
+                configureProgress(with: isPaused)
+            }
+            guard !isPaused else { return }
             startProgress()
-        }
-        .onChange(of: isPaused) { state in
-            configureProgress(with: state)
-            isTimerRunning = state
         }
     }
 }
@@ -206,7 +210,7 @@ private extension StoryDetailView {
     }
 
     func startProgress() {
-        guard !isTimerRunning else { return }
+        guard !isPaused else { return }
 
         let index = getCurrentIndex()
         let story = getStory(with: index)
