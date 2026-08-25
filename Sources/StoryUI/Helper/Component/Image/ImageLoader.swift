@@ -93,7 +93,7 @@ private extension ImageLoader {
        self.addSubview(imageView)
        imageView.layer.cornerRadius = 12
        imageView.clipsToBounds = true
-       imageView.contentMode = .scaleAspectFill
+       imageView.contentMode = .scaleAspectFit
    }
 }
 // MARK: - Const funcs
