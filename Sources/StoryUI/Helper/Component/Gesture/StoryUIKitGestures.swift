@@ -101,7 +101,16 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
 
         private var axis: Axis = .undecided
 
+        /// TabView's paging pan. Held weakly, and only ever suspended AFTER the
+        /// axis has latched vertical on real evidence.
+        private weak var pagingPan: UIPanGestureRecognizer?
+        /// Whether *we* are the ones who disabled it. Restoring only what we
+        /// suspended means we can never re-enable paging the app turned off.
+        private var didSuspendPaging = false
+
         var isDismissing: Bool { axis == .vertical }
+
+        deinit { restorePaging() }
 
         /// Always begin. The axis is decided later, in `shouldDrag`, once there is
         /// enough travel to tell a page swipe from a dismiss - UIKit asks this at
@@ -115,9 +124,14 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
             // Unconditionally simultaneous. UIKit documents that YES from EITHER
-            // delegate guarantees both recognizers run, so this alone is what keeps
-            // paging alive - and it is the only answer this delegate ever gives.
-            true
+            // delegate guarantees both recognizers run, so this is what keeps
+            // paging alive while the axis is still undecided.
+            if pagingPan == nil,
+               otherGestureRecognizer.view is UIScrollView,
+               let pan = otherGestureRecognizer as? UIPanGestureRecognizer {
+                pagingPan = pan
+            }
+            return true
         }
 
         /// Blocks nothing either: an early NO here would fail the paging pan.
@@ -153,13 +167,33 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
                 let dy = abs(translation.y)
                 guard max(dx, dy) >= Constant.dismissAxisLockDistance else { return false }
                 axis = dy > dx * Constant.dismissAxisLockRatio ? .vertical : .horizontal
+                if axis == .vertical {
+                    // Only here, with the axis settled on evidence, is it safe to
+                    // take paging out - otherwise a sideways move part-way through
+                    // a dismiss would turn the page underneath it. Deciding this
+                    // any earlier is what previously killed genuine page swipes.
+                    suspendPaging()
+                }
                 return axis == .vertical
             }
         }
 
-        /// Clears the latch, ready for the next touch.
+        /// Clears the latch and gives paging back, ready for the next touch.
         func finish() {
+            restorePaging()
             axis = .undecided
+        }
+
+        private func suspendPaging() {
+            guard !didSuspendPaging, let pagingPan else { return }
+            didSuspendPaging = true
+            pagingPan.isEnabled = false
+        }
+
+        private func restorePaging() {
+            guard didSuspendPaging else { return }
+            didSuspendPaging = false
+            pagingPan?.isEnabled = true
         }
     }
 
@@ -181,6 +215,9 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
         recognizer.isEnabled = isEnabled
+        // Disabling our own recognizer cancels it without necessarily delivering a
+        // state change, so release paging here too rather than relying on it.
+        if !isEnabled { context.coordinator.finish() }
     }
 
     func handleUIGestureRecognizerAction(

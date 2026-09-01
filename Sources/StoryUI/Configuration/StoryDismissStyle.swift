@@ -29,6 +29,21 @@ public enum StoryDismissStyle: Equatable {
     /// Recedes rather than shrinks: a small scale change plus a darkening veil,
     /// so the story reads as falling behind the backdrop.
     case depth(minScale: Double = 0.90, dim: Double = 0.5)
+
+    /// Dissolves in place. No scale, no rounding.
+    case fade
+
+    /// Tilts away from you on the horizontal axis, like a page being lifted.
+    case flip(maxRotation: Double = 28)
+
+    /// Collapses hard toward a small thumbnail, fading as it goes.
+    case shrink(minScale: Double = 0.25)
+
+    /// Slides back into the deck: a small scale drop plus a slight backward tilt.
+    case stack(minScale: Double = 0.85)
+
+    /// The circle, dissolving as it flies. Snapchat with a softer exit.
+    case circleFade(minScale: Double = 0.35)
 }
 
 // MARK: - Resolved transform
@@ -44,6 +59,10 @@ extension StoryDismissStyle {
         var roundness: CGFloat = 0
         /// Darkening veil over the story itself.
         var dim: CGFloat = 0
+        var opacity: CGFloat = 1
+        /// Tilt about the horizontal axis, for the styles that lean away.
+        var tilt: Angle = .zero
+        var perspective: CGFloat = 1
         var backdropOpacity: CGFloat = 1
     }
 
@@ -92,6 +111,36 @@ extension StoryDismissStyle {
             transform.scaleX = scale
             transform.scaleY = scale
             transform.dim = dim * progress
+
+        case .fade:
+            transform.opacity = 1 - progress
+
+        case let .flip(maxRotation):
+            transform.tilt = .degrees(maxRotation * progress * (banded < 0 ? 1 : -1))
+            transform.perspective = 0.6
+            let scale = 1 - 0.10 * progress
+            transform.scaleX = scale
+            transform.scaleY = scale
+
+        case let .shrink(minScale):
+            let scale = 1 - (1 - minScale) * progress
+            transform.scaleX = scale
+            transform.scaleY = scale
+            transform.opacity = 1 - progress * 0.6
+
+        case let .stack(minScale):
+            let scale = 1 - (1 - minScale) * progress
+            transform.scaleX = scale
+            transform.scaleY = scale
+            transform.tilt = .degrees(6 * progress * (banded < 0 ? 1 : -1))
+            transform.perspective = 0.4
+
+        case let .circleFade(minScale):
+            let scaleY = 1 - (1 - minScale) * progress
+            transform.scaleY = scaleY
+            transform.scaleX = 1 - (1 - minScale * (size.height / size.width)) * progress
+            transform.roundness = progress
+            transform.opacity = 1 - progress * 0.5
         }
 
         return transform
@@ -103,7 +152,10 @@ extension StoryDismissStyle {
         // Straight off the nearest edge, in the direction the finger was going.
         transform.offset = offset < 0 ? -size.height : size.height
         transform.backdropOpacity = 0
-        if case .circle = self { transform.roundness = 1 }
+        switch self {
+        case .circle, .circleFade: transform.roundness = 1
+        default: break
+        }
         return transform
     }
 

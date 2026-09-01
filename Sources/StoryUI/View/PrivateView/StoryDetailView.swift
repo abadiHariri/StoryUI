@@ -188,16 +188,13 @@ private extension StoryDetailView {
             .padding(.horizontal, 16)
 
             closeIcon()
-                .opacity(chromeOpacity)
-                .animation(.easeOut(duration: 0.2), value: chromeOpacity)
+                .opacity(isHolding || viewModel.isDragging ? 0 : 1)
         }
-    }
-
-    /// The progress bar deliberately stays put - it is the one overlay that is
-    /// still meaningful while holding, since it is what shows the story is frozen.
-    var chromeOpacity: CGFloat {
-        if isHolding { return 0 }
-        return max(0, 1 - viewModel.dismissProgress)
+        // The progress bar survives a hold - it is what shows the story frozen -
+        // but goes with everything else while the story is being dragged away.
+        .opacity(viewModel.isDragging ? 0 : 1)
+        .animation(.easeOut(duration: 0.2), value: isHolding)
+        .animation(.easeOut(duration: 0.2), value: viewModel.isDragging)
     }
 
     @ViewBuilder

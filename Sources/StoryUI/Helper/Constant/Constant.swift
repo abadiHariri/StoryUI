@@ -83,8 +83,9 @@ enum Constant {
     static let dismissSnapBackDuration: TimeInterval = 0.32
 
     /// After a cancelled drag the story waits before playing again, rather than
-    /// lurching straight back into motion under the finger that just let go.
-    static let dismissResumeDelay: TimeInterval = 3.0
+    /// lurching straight back into motion under the finger that just let go. Long
+    /// enough to read as deliberate, short enough not to feel stuck.
+    static let dismissResumeDelay: TimeInterval = 0.8
 
     // MARK: Timing
 

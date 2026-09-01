@@ -108,10 +108,13 @@ public struct StoryView<Footer: View>: View {
                             footer(model)
                         }
                     }
-                    // Host chrome goes away entirely while holding; only the
-                    // progress bar stays, since it is what shows the story frozen.
-                    .opacity(chromeOpacity)
-                    .animation(.easeOut(duration: 0.2), value: chromeOpacity)
+                    // Hidden while holding, and for the whole dismiss drag.
+                    // Driven by booleans, never by the per-frame drag offset:
+                    // an implicit animation re-triggered every frame queues
+                    // overlapping animations and is itself a source of judder.
+                    .opacity(viewModel.isHolding || viewModel.isDragging ? 0 : 1)
+                    .animation(.easeOut(duration: 0.2), value: viewModel.isHolding)
+                    .animation(.easeOut(duration: 0.2), value: viewModel.isDragging)
                 }
                 .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
@@ -119,11 +122,17 @@ public struct StoryView<Footer: View>: View {
                 // Story, footer and chrome move as one unit, like the host's
                 // fullscreen image gallery. The modifier set is fixed for every
                 // dismiss style so switching style never changes view identity.
-                .clipShape(StoryRoundnessShape(roundness: transform.roundness))
                 .overlay(
                     Color.black
                         .opacity(transform.dim)
                         .allowsHitTesting(false)
+                )
+                .clipShape(StoryRoundnessShape(roundness: transform.roundness))
+                .opacity(transform.opacity)
+                .rotation3DEffect(
+                    transform.tilt,
+                    axis: (x: 1, y: 0, z: 0),
+                    perspective: transform.perspective
                 )
                 .scaleEffect(x: transform.scaleX, y: transform.scaleY)
                 .rotationEffect(transform.rotation)
@@ -156,20 +165,16 @@ public struct StoryView<Footer: View>: View {
             : dismissStyle.transform(offset: dragOffset, size: screenSize)
     }
 
-    private var chromeOpacity: CGFloat {
-        if viewModel.isHolding { return 0 }
-        return max(0, 1 - viewModel.dismissProgress)
-    }
-
     private func dragChanged(_ translation: CGFloat) {
         guard !isFlyingAway else { return }
         if !viewModel.isDragging {
             viewModel.beginDismissDrag()
         }
         dragOffset = translation
-        let progress = min(1, abs(transform.offset) / Constant.dismissCommitDistance)
-        viewModel.dismissProgress = progress
-        onDismissProgress?(progress)
+        // Reported straight to the host, never stored in the observed object: a
+        // @Published write here would re-render every StoryDetailView - and every
+        // GeometryReader and AVPlayer in them - on every frame of the drag.
+        onDismissProgress?(min(1, abs(transform.offset) / Constant.dismissCommitDistance))
     }
 
     private func dragEnded(_ translation: CGFloat, _ velocity: CGFloat) {

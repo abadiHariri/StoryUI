@@ -31,9 +31,6 @@ final class StoryViewModel: ObservableObject {
     /// a cancelled one so the story does not snap straight back into motion.
     @Published var isPausedByDrag: Bool = false
 
-    /// 0...1 toward the dismiss threshold. Drives chrome fading.
-    @Published var dismissProgress: CGFloat = 0
-
     /// True while the current story is held. Hides host chrome.
     @Published var isHolding: Bool = false
 
@@ -74,7 +71,6 @@ extension StoryViewModel {
     /// The drag was released without committing. The story springs back, and only
     /// then - after a beat - starts playing again.
     func cancelDismissDrag() {
-        dismissProgress = 0
         // Unfreeze once the spring has settled, not when the finger lifts.
         schedule(after: Constant.dismissSnapBackDuration) { [weak self] in
             self?.isDragging = false
@@ -87,7 +83,6 @@ extension StoryViewModel {
     /// The drag committed. Nothing resumes - the story is going away.
     func commitDismissDrag() {
         cancelScheduled()
-        dismissProgress = 1
     }
 
     private func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) {
