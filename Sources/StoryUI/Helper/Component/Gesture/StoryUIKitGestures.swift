@@ -8,9 +8,13 @@
 //  TabView(.page) is backed by a UICollectionView, i.e. a UIScrollView with a
 //  real panGestureRecognizer that starts at ~10pt in any direction. A gesture
 //  declared in SwiftUI - here or in the host app - cannot tell that recognizer
-//  anything. A UIKit recognizer can: UIKit grants simultaneity when EITHER
-//  delegate says so, and `shouldRecognizeSimultaneouslyWith` hands us the
-//  paging pan itself, which is also the handle we need to suspend it.
+//  anything, so it loses the race. A UIKit recognizer can, because UIKit grants
+//  simultaneity when EITHER delegate says so.
+//
+//  Every delegate here answers the same way: yes to simultaneous, no to every
+//  failure requirement, and nothing is ever disabled. These recognizers observe;
+//  they cannot block. Which recognizer's effect we ACT on is decided in Swift,
+//  from the accumulated translation, never by suppressing UIKit.
 //
 
 import SwiftUI
@@ -26,11 +30,23 @@ struct StoryHoldGesture: UIGestureRecognizerRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         /// Never block anything: taps, the paging pan and the dismiss pan must
-        /// all keep working while a hold is engaged.
+        /// all keep working while a hold is engaged. A long press with a huge
+        /// allowableMovement recognizes during any swipe slower than 0.3s, so
+        /// these three answers are what stop it eating page swipes.
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool { true }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool { false }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool { false }
     }
 
     var onHoldChanged: (Bool) -> Void
@@ -83,8 +99,6 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
 
         private enum Axis { case undecided, vertical, horizontal }
 
-        /// TabView's paging pan, captured the first time UIKit asks us about it.
-        private weak var pagingPan: UIPanGestureRecognizer?
         private var axis: Axis = .undecided
 
         var isDismissing: Bool { axis == .vertical }
@@ -100,20 +114,34 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
-            // The paging pan is the one living on a UIScrollView. Hold a weak
-            // reference so we can suspend it once we know the drag is vertical.
-            if pagingPan == nil,
-               otherGestureRecognizer.view is UIScrollView,
-               let pan = otherGestureRecognizer as? UIPanGestureRecognizer {
-                pagingPan = pan
-            }
-            // Never block the pager: until the axis is settled both must be free
-            // to track, otherwise a swipe is dead before we know what it was.
-            return true
+            // Unconditionally simultaneous. UIKit documents that YES from EITHER
+            // delegate guarantees both recognizers run, so this alone is what keeps
+            // paging alive - and it is the only answer this delegate ever gives.
+            true
+        }
+
+        /// Blocks nothing either: an early NO here would fail the paging pan.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRequireFailureOf otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            false
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            false
         }
 
         /// True once this touch has proved itself a vertical dismiss. The decision
         /// latches, so a drag cannot flip axis halfway and stutter.
+        ///
+        /// This gates only what WE draw. It never touches the paging recognizer:
+        /// suspending that was what killed page swipes, because any misclassified
+        /// touch was then unrecoverable. Now a misclassification costs at most a
+        /// little unwanted movement, and paging keeps running regardless.
         func shouldDrag(translation: CGPoint) -> Bool {
             switch axis {
             case .vertical:
@@ -124,24 +152,13 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
                 let dx = abs(translation.x)
                 let dy = abs(translation.y)
                 guard max(dx, dy) >= Constant.dismissAxisLockDistance else { return false }
-
-                if dy > dx * Constant.dismissAxisLockRatio {
-                    axis = .vertical
-                    // Only now, with the axis settled, is it safe to take paging
-                    // out. Disabling force-cancels it, snapping any partial page back.
-                    pagingPan?.isEnabled = false
-                } else {
-                    axis = .horizontal
-                }
+                axis = dy > dx * Constant.dismissAxisLockRatio ? .vertical : .horizontal
                 return axis == .vertical
             }
         }
 
-        /// Restores paging and clears the latch, ready for the next touch.
+        /// Clears the latch, ready for the next touch.
         func finish() {
-            if let pagingPan, !pagingPan.isEnabled {
-                pagingPan.isEnabled = true
-            }
             axis = .undecided
         }
     }
