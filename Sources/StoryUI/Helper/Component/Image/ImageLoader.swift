@@ -25,11 +25,6 @@ final class ImageLoader: UIView {
         fatalError("init(coder:) has not been implemented")
     }
     
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        addConst()
-    }
-    
     func loadImageWithUrl(_ url: String?, imageIsLoaded: @escaping () -> Void) {
 
         guard let validatedUrl = url else {
@@ -90,10 +85,21 @@ final class ImageLoader: UIView {
 // MARK: - Private Funcs
 private extension ImageLoader {
    func setupImageView() {
-       self.addSubview(imageView)
+       addSubview(imageView)
        imageView.layer.cornerRadius = 12
        imageView.clipsToBounds = true
        imageView.contentMode = .scaleAspectFit
+       // Once, in init. This used to run from layoutSubviews, which re-activated
+       // four fresh constraints on every single layout pass - so they accumulated
+       // without bound and fought each other, and the view visibly juddered under
+       // anything that laid out repeatedly, like a drag or a page swipe.
+       imageView.translatesAutoresizingMaskIntoConstraints = false
+       NSLayoutConstraint.activate([
+           imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+           imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
+           imageView.topAnchor.constraint(equalTo: topAnchor),
+           imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+       ])
    }
 }
 
@@ -105,19 +111,7 @@ extension ImageLoader {
 }
 // MARK: - Const funcs
 extension ImageLoader {
-    
-    private func addConst() {
-        imageView.frame.size.width = self.frame.size.width
-        imageView.frame.size.height = self.frame.size.height
-        self.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: self.leadingAnchor,constant: 0),
-            imageView.rightAnchor.constraint(equalTo: self.rightAnchor,constant: 0),
-            imageView.bottomAnchor.constraint(equalTo: self.safeAreaLayoutGuide.bottomAnchor,constant: 0),
-            imageView.topAnchor.constraint(equalTo: self.topAnchor,constant: 0),
-        ])
-    }
-    
+
     private func addIndicator() {
         activityIndicator.color = UIColor.lightGray.withAlphaComponent(0.7)
         addSubview(activityIndicator)

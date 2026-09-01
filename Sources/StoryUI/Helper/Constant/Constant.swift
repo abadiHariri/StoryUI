@@ -72,4 +72,28 @@ enum Constant {
     /// How much more vertical than horizontal a drag must be to count as a
     /// dismiss. Anything less decisive is left to the pager.
     static let dismissAxisLockRatio: CGFloat = 1.2
+
+    /// Resistance curve. 1.0 tracks the finger 1:1 at first and saturates as the
+    /// drag grows; lower values feel stiffer from the start.
+    static let dismissRubberBandCoefficient: CGFloat = 1.0
+
+    /// How long the snap-back spring takes. Page transitions stay frozen for
+    /// exactly this long after a cancelled drag, so the spring cannot feed back
+    /// into them through the `.global` frames they read.
+    static let dismissSnapBackDuration: TimeInterval = 0.32
+
+    /// After a cancelled drag the story waits before playing again, rather than
+    /// lurching straight back into motion under the finger that just let go.
+    static let dismissResumeDelay: TimeInterval = 3.0
+
+    // MARK: Timing
+
+    /// Progress tick. Advancing is measured against the wall clock rather than
+    /// counted in ticks, so a late or coalesced tick cannot stretch a story past
+    /// its configured duration - this is only how often we look.
+    static let timerTick: TimeInterval = 0.1
+
+    /// Longest gap a single tick may account for. Caps the catch-up jump after the
+    /// app is backgrounded or the main thread stalls.
+    static let maxTickInterval: TimeInterval = 0.5
 }

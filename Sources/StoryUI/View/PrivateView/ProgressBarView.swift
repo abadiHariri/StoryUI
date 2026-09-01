@@ -27,6 +27,11 @@ struct ProgressBarView: View {
                     
                     ,alignment: .leading
                 )
+                // The timer only ticks 10x a second, which reads as stepping.
+                // Interpolating across each tick costs nothing and makes the bar
+                // continuous; progress is linear in time, so linear is exact
+                // rather than merely smooth.
+                .animation(.linear(duration: Constant.timerTick), value: perfectProgress)
         }
         .frame(height: Constant.progressBarHeight)
     }

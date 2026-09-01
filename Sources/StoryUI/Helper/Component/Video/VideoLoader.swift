@@ -45,6 +45,17 @@ final class PlayerView: UIView {
 
     required init?(coder: NSCoder) { nil }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard playerLayer.frame != contentView.bounds else { return }
+        // CALayer animates frame changes implicitly, which would make the video
+        // lag a frame behind the view it sits in during a drag.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = contentView.bounds
+        CATransaction.commit()
+    }
+
     func startVideo(url: URL?) {
         guard let validatedUrl = url else { return }
         if self.url == url { return }
@@ -195,17 +206,14 @@ private extension PlayerView {
     }
 
     func setupPlayer() {
-        self.addSubview(contentView)
-        contentView.frame.size.width = self.frame.size.width
-        contentView.frame.size.height = self.frame.size.height
-        self.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentView)
+        contentView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 0),
-            contentView.rightAnchor.constraint(equalTo: self.rightAnchor, constant: 0),
-            contentView.bottomAnchor.constraint(equalTo: self.safeAreaLayoutGuide.bottomAnchor, constant: 0),
-            contentView.topAnchor.constraint(equalTo: self.topAnchor, constant: 0),
+            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        playerLayer.frame = contentView.frame
     }
 
     func removeActivityIndicatory() {

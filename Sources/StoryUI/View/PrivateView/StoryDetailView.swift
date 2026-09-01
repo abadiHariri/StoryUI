@@ -20,7 +20,7 @@ struct StoryDetailView: View {
     var imageContentMode: StoryContentMode = .fit
     var videoContentMode: StoryContentMode = .fill
 
-    @State var timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
+    @State var timer = Timer.publish(every: Constant.timerTick, on: .main, in: .common).autoconnect()
     @State var timerProgress: CGFloat = 0
 
     // MARK: Private Properties
@@ -47,6 +47,11 @@ struct StoryDetailView: View {
     /// Latched when a hold engages. Swallows the trailing tap that fires when the
     /// finger lifts.
     @State private var suppressNextTap: Bool = false
+    /// When progress was last advanced. Advancing by measured elapsed time rather
+    /// than by a fixed per-tick amount is what makes a story last exactly as long
+    /// as configured: `Timer` ticks late under load and coalesces in the run loop,
+    /// so counting them stretches every duration by an unpredictable amount.
+    @State private var lastProgressTick: Date?
 
     var body: some View {
 
@@ -81,7 +86,7 @@ struct StoryDetailView: View {
             resetProgress()
             playVideo()
         }
-        .onChange(of: viewModel.isDragging) { _ in
+        .onChange(of: viewModel.isPausedByDrag) { _ in
             // A dismiss drag freezes the story for its whole duration. Going
             // through the one edge detector means a snap-back resumes, while a
             // drag released under a host pause or a live hold does not.
@@ -126,7 +131,11 @@ struct StoryDetailView: View {
             // since isPaused is often a computed Binding crossing into the
             // custom fullscreen window, where onChange doesn't reliably fire.
             applyPauseStateIfNeeded()
-            guard !effectivePaused else { return }
+            guard !effectivePaused else {
+                // Dropped so paused time is never billed to the current story.
+                lastProgressTick = nil
+                return
+            }
             startProgress()
         }
     }
@@ -179,7 +188,16 @@ private extension StoryDetailView {
             .padding(.horizontal, 16)
 
             closeIcon()
+                .opacity(chromeOpacity)
+                .animation(.easeOut(duration: 0.2), value: chromeOpacity)
         }
+    }
+
+    /// The progress bar deliberately stays put - it is the one overlay that is
+    /// still meaningful while holding, since it is what shows the story is frozen.
+    var chromeOpacity: CGFloat {
+        if isHolding { return 0 }
+        return max(0, 1 - viewModel.dismissProgress)
     }
 
     @ViewBuilder
@@ -265,7 +283,7 @@ private extension StoryDetailView {
     /// else - that is what makes releasing a hold unable to resume a story the
     /// host is holding paused.
     var effectivePaused: Bool {
-        isPaused || isHolding || viewModel.isDragging
+        isPaused || isHolding || viewModel.isPausedByDrag
     }
 
     /// iOS 18+ drives the hold from a UILongPressGestureRecognizer, which applies
@@ -280,6 +298,10 @@ private extension StoryDetailView {
     func setHolding(_ holding: Bool) {
         guard holding != isHolding else { return }
         isHolding = holding
+        // Only the visible bundle drives shared chrome.
+        if viewModel.currentStoryUser == model.id {
+            viewModel.isHolding = holding
+        }
         // Armed at engage, strictly before the finger lifts, so the tap that
         // fires on release is swallowed under every callback ordering.
         if holding { suppressNextTap = true }
@@ -331,6 +353,7 @@ private extension StoryDetailView {
 
     func resetProgress() {
         timerProgress = 0
+        lastProgressTick = nil
     }
 
     func getPreviousStory() {
@@ -413,6 +436,7 @@ private extension StoryDetailView {
             updateStory()
         } else {
             //next Story
+            lastProgressTick = nil
             timerProgress = CGFloat(Int(timerProgress + 1))
         }
     }
@@ -424,6 +448,7 @@ private extension StoryDetailView {
         if (timerProgress - 1) < 0 {
             updateStory(direction: .previous)
         } else {
+            lastProgressTick = nil
             timerProgress = CGFloat(Int(timerProgress - 1))
         }
     }
@@ -448,8 +473,11 @@ private extension StoryDetailView {
     }
 
     func getProgressBarFrame(duration: Double) {
-        let calculatedDuration = viewModel.getVideoProgressBarFrame(duration: duration)
-        timerProgress += (0.01 / calculatedDuration)
+        guard duration > 0 else { return }
+        let now = Date()
+        let elapsed = lastProgressTick.map { now.timeIntervalSince($0) } ?? Constant.timerTick
+        lastProgressTick = now
+        timerProgress += CGFloat(min(elapsed, Constant.maxTickInterval) / duration)
     }
 
     func dissmis() {

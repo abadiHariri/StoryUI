@@ -20,6 +20,7 @@ public struct StoryView<Footer: View>: View {
     private var footer: (StoryUIModel) -> Footer
     private var isDragToDismissEnabled: Bool
     private var transitionStyle: StoryTransitionStyle
+    private var dismissStyle: StoryDismissStyle
     private var imageDuration: TimeInterval
     private var imageContentMode: StoryContentMode
     private var videoContentMode: StoryContentMode
@@ -38,6 +39,7 @@ public struct StoryView<Footer: View>: View {
     ///   - isPaused: pauses the auto-advance timer and video playback, e.g. while the host presents a sheet on top of the story
     ///   - isDragToDismissEnabled: set false to suppress drag-to-dismiss, e.g. while the story is zoomed
     ///   - transitionStyle: how bundles look as they move between pages, on swipe and on auto-advance
+    ///   - dismissStyle: how the story looks while being dragged away
     ///   - imageDuration: how long an image stays on screen before auto-advancing; a story can override
     ///     it via `StoryConfiguration(mediaType:imageDuration:)`. Video always runs its own length.
     ///   - imageContentMode: how images are scaled into the frame; per-story override via `StoryConfiguration`
@@ -52,6 +54,7 @@ public struct StoryView<Footer: View>: View {
         isPaused: Binding<Bool> = .constant(false),
         isDragToDismissEnabled: Bool = true,
         transitionStyle: StoryTransitionStyle = .cube(),
+        dismissStyle: StoryDismissStyle = .scale(),
         imageDuration: TimeInterval = 5,
         imageContentMode: StoryContentMode = .fit,
         videoContentMode: StoryContentMode = .fill,
@@ -65,6 +68,7 @@ public struct StoryView<Footer: View>: View {
         self.isPaused = isPaused
         self.isDragToDismissEnabled = isDragToDismissEnabled
         self.transitionStyle = transitionStyle
+        self.dismissStyle = dismissStyle
         self.imageDuration = imageDuration
         self.imageContentMode = imageContentMode
         self.videoContentMode = videoContentMode
@@ -80,7 +84,7 @@ public struct StoryView<Footer: View>: View {
                 // opaque child it hid whatever the host painted behind the story,
                 // so a backdrop fade was invisible however the host animated it.
                 Color.black
-                    .opacity(backdropOpacity)
+                    .opacity(transform.backdropOpacity)
                     .ignoresSafeArea()
 
                 ZStack {
@@ -104,14 +108,26 @@ public struct StoryView<Footer: View>: View {
                             footer(model)
                         }
                     }
+                    // Host chrome goes away entirely while holding; only the
+                    // progress bar stays, since it is what shows the story frozen.
+                    .opacity(chromeOpacity)
+                    .animation(.easeOut(duration: 0.2), value: chromeOpacity)
                 }
                 .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // Story, footer and chrome move as one unit, like the host's
-                // fullscreen image gallery.
-                .scaleEffect(storyScale)
-                .offset(y: dragOffset)
+                // fullscreen image gallery. The modifier set is fixed for every
+                // dismiss style so switching style never changes view identity.
+                .clipShape(StoryRoundnessShape(roundness: transform.roundness))
+                .overlay(
+                    Color.black
+                        .opacity(transform.dim)
+                        .allowsHitTesting(false)
+                )
+                .scaleEffect(x: transform.scaleX, y: transform.scaleY)
+                .rotationEffect(transform.rotation)
+                .offset(y: transform.offset)
                 .storyDismissGesture(
                     isEnabled: isDragToDismissEnabled && !isFlyingAway,
                     onChanged: dragChanged,
@@ -130,50 +146,56 @@ public struct StoryView<Footer: View>: View {
 
     // MARK: Drag to dismiss
 
-    private var dragDistance: CGFloat { abs(dragOffset) }
+    private var screenSize: CGSize { UIScreen.main.bounds.size }
 
-    private var storyScale: CGFloat {
-        guard !isFlyingAway else { return Constant.dismissFinalScale }
-        return max(Constant.dismissFinalScale, 1 - dragDistance / Constant.dismissScaleDivisor)
+    /// One resolved value for the whole drag, so every modifier below reads from a
+    /// single source and cannot disagree with the others mid-animation.
+    private var transform: StoryDismissStyle.Transform {
+        isFlyingAway
+            ? dismissStyle.committedTransform(offset: dragOffset, size: screenSize)
+            : dismissStyle.transform(offset: dragOffset, size: screenSize)
     }
 
-    private var backdropOpacity: CGFloat {
-        guard !isFlyingAway else { return 0 }
-        return max(0, 1 - dragDistance / Constant.dismissOpacityDivisor)
+    private var chromeOpacity: CGFloat {
+        if viewModel.isHolding { return 0 }
+        return max(0, 1 - viewModel.dismissProgress)
     }
 
     private func dragChanged(_ translation: CGFloat) {
         guard !isFlyingAway else { return }
-        // Freezes the story for the whole drag, the same way a press-and-hold does.
         if !viewModel.isDragging {
-            viewModel.isDragging = true
+            viewModel.beginDismissDrag()
         }
         dragOffset = translation
-        onDismissProgress?(min(1, dragDistance / Constant.dismissCommitDistance))
+        let progress = min(1, abs(transform.offset) / Constant.dismissCommitDistance)
+        viewModel.dismissProgress = progress
+        onDismissProgress?(progress)
     }
 
     private func dragEnded(_ translation: CGFloat, _ velocity: CGFloat) {
         guard !isFlyingAway else { return }
 
-        let commits = abs(translation) > Constant.dismissCommitDistance
+        let commits = abs(transform.offset) > Constant.dismissCommitDistance
             || abs(velocity) > Constant.dismissCommitVelocity
 
         guard commits else {
-            // Snap back, then let the story run again.
-            withAnimation(.spring(response: 0.30, dampingFraction: 0.85)) {
+            withAnimation(.spring(response: Constant.dismissSnapBackDuration, dampingFraction: 0.85)) {
                 dragOffset = 0
             }
             onDismissProgress?(0)
-            viewModel.isDragging = false
+            // Unfreezes page transitions once the spring settles, and resumes the
+            // story a few seconds later rather than the instant the finger lifts.
+            viewModel.cancelDismissDrag()
             return
         }
 
         isFlyingAway = true
+        viewModel.commitDismissDrag()
         onDismissProgress?(1)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
         withAnimation(.spring(response: 0.15, dampingFraction: 0.85)) {
-            dragOffset = translation < 0 ? -UIScreen.main.bounds.height : UIScreen.main.bounds.height
+            dragOffset = translation < 0 ? -screenSize.height : screenSize.height
         }
 
         // body is `if isPresented`, so the fly-away has to finish before the flip
@@ -214,6 +236,7 @@ public extension StoryView where Footer == EmptyView {
         isPaused: Binding<Bool> = .constant(false),
         isDragToDismissEnabled: Bool = true,
         transitionStyle: StoryTransitionStyle = .cube(),
+        dismissStyle: StoryDismissStyle = .scale(),
         imageDuration: TimeInterval = 5,
         imageContentMode: StoryContentMode = .fit,
         videoContentMode: StoryContentMode = .fill,
@@ -227,6 +250,7 @@ public extension StoryView where Footer == EmptyView {
             isPaused: isPaused,
             isDragToDismissEnabled: isDragToDismissEnabled,
             transitionStyle: transitionStyle,
+            dismissStyle: dismissStyle,
             imageDuration: imageDuration,
             imageContentMode: imageContentMode,
             videoContentMode: videoContentMode,
