@@ -216,21 +216,14 @@ private extension StoryDetailView {
                     tapNextStory()
                 }
         }
-        // On the CONTAINER, not on each Rectangle: one press signal for the whole
-        // media area, and a parent gesture composing with its children's is
-        // well-defined where two gesture modifiers on one view are not.
-        // .simultaneousGesture requires nothing to fail and blocks nothing, so
-        // tap-to-advance, the TabView page pan and a host's drag-to-dismiss all
-        // keep exactly the behaviour they have today.
-        // Never use .highPriorityGesture here - it would let this pre-empt the
-        // child taps and ask SwiftUI to win arbitration against the page pan.
-        // Inert on iOS 18+, where `usesUIKitGestures` stops the tick from acting
-        // on `isPressing` and the UILongPressGestureRecognizer below takes over.
-        .simultaneousGesture(holdToPauseGesture)
-        // iOS 18+ only. Attached here rather than in StoryView so it sees only
-        // the media area: the footer, progress bar and close button hit-test
-        // above this view, so holding the like button cannot pause the story.
-        .storyHoldGesture { holding in
+        // Exactly ONE hold recognizer is ever attached. Both are attached to the
+        // container rather than to each Rectangle, so the whole media area is one
+        // press signal - and so the footer, progress bar and close button, which
+        // hit-test above this view, can never trigger a pause.
+        .holdToPause(
+            useUIKit: usesUIKitGestures,
+            swiftUIGesture: holdToPauseGesture
+        ) { holding in
             if holding {
                 setHolding(true)
             } else {

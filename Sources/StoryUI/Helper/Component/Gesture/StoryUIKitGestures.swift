@@ -208,16 +208,25 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
 
 // MARK: - Gated modifiers
 
-/// Attaches the UIKit hold on iOS 18+, and nothing at all below it - the older
-/// path keeps the SwiftUI `holdToPauseGesture` declared in `StoryDetailView`.
-struct StoryHoldGestureModifier: ViewModifier {
+/// Attaches EXACTLY ONE hold recognizer: the UIKit one on iOS 18+, the caller's
+/// SwiftUI one below.
+///
+/// Both must never be attached at once. Silencing one is not enough - a gesture
+/// whose effect is ignored is still installed and still arbitrating for every
+/// touch, and the SwiftUI hold is deliberately built never to recognize, so it
+/// stays pending for the entire duration of every touch including page swipes.
+/// It also cannot answer UIKit's simultaneity and failure-requirement questions,
+/// which is the whole reason the UIKit version exists.
+struct StoryHoldGestureModifier<SwiftUIGesture: Gesture>: ViewModifier {
+    var useUIKit: Bool
+    var swiftUIGesture: SwiftUIGesture
     var onHoldChanged: (Bool) -> Void
 
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
+        if #available(iOS 18.0, *), useUIKit {
             content.gesture(StoryHoldGesture(onHoldChanged: onHoldChanged))
         } else {
-            content
+            content.simultaneousGesture(swiftUIGesture)
         }
     }
 }
@@ -256,8 +265,18 @@ struct StoryDismissGestureModifier: ViewModifier {
 }
 
 extension View {
-    func storyHoldGesture(onHoldChanged: @escaping (Bool) -> Void) -> some View {
-        modifier(StoryHoldGestureModifier(onHoldChanged: onHoldChanged))
+    func holdToPause<G: Gesture>(
+        useUIKit: Bool,
+        swiftUIGesture: G,
+        onHoldChanged: @escaping (Bool) -> Void
+    ) -> some View {
+        modifier(
+            StoryHoldGestureModifier(
+                useUIKit: useUIKit,
+                swiftUIGesture: swiftUIGesture,
+                onHoldChanged: onHoldChanged
+            )
+        )
     }
 
     func storyDismissGesture(
