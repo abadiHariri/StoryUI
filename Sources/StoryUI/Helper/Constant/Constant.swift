@@ -73,6 +73,10 @@ enum Constant {
     /// dismiss. Anything less decisive is left to the pager.
     static let dismissAxisLockRatio: CGFloat = 1.2
 
+    /// How far ahead of the shrink the corner rounding runs, for the styles that
+    /// end as a circle. 1.0 would only complete the circle at the commit point.
+    static let dismissRoundnessLead: CGFloat = 1.6
+
     /// Resistance curve. 1.0 tracks the finger 1:1 at first and saturates as the
     /// drag grows; lower values feel stiffer from the start.
     static let dismissRubberBandCoefficient: CGFloat = 1.0

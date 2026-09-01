@@ -80,6 +80,10 @@ extension StoryDismissStyle {
 
         var transform = Transform()
         transform.offset = banded
+        // Default fade. Styles that shrink the story to a small shape override this
+        // below: at the commit point they are only covering a fraction of the
+        // screen, so a backdrop still at 60% opacity reads as "the screen is just
+        // black", which defeats the effect entirely.
         transform.backdropOpacity = max(0, 1 - distance / Constant.dismissOpacityDivisor)
 
         switch self {
@@ -91,11 +95,15 @@ extension StoryDismissStyle {
         case let .circle(minScale):
             // Scaling y by `minScale` and x by `minScale * height/width` lands on a
             // square, so the inscribed ellipse below renders as a true circle.
-            let scaleY = 1 - (1 - minScale) * progress
             let aspect = size.height / size.width
-            transform.scaleY = scaleY
+            transform.scaleY = 1 - (1 - minScale) * progress
             transform.scaleX = 1 - (1 - minScale * aspect) * progress
-            transform.roundness = progress
+            // Rounds ahead of the shrink so it reads as a circle well before the
+            // commit point, rather than only at the very end.
+            transform.roundness = min(1, progress * Constant.dismissRoundnessLead)
+            // Gone completely by commit: the story is a small circle by then, and
+            // anything left of the backdrop just looks like a black screen.
+            transform.backdropOpacity = max(0, 1 - progress)
 
         case .slide:
             break
@@ -127,6 +135,7 @@ extension StoryDismissStyle {
             transform.scaleX = scale
             transform.scaleY = scale
             transform.opacity = 1 - progress * 0.6
+            transform.backdropOpacity = max(0, 1 - progress)
 
         case let .stack(minScale):
             let scale = 1 - (1 - minScale) * progress
@@ -136,11 +145,11 @@ extension StoryDismissStyle {
             transform.perspective = 0.4
 
         case let .circleFade(minScale):
-            let scaleY = 1 - (1 - minScale) * progress
-            transform.scaleY = scaleY
+            transform.scaleY = 1 - (1 - minScale) * progress
             transform.scaleX = 1 - (1 - minScale * (size.height / size.width)) * progress
-            transform.roundness = progress
+            transform.roundness = min(1, progress * Constant.dismissRoundnessLead)
             transform.opacity = 1 - progress * 0.5
+            transform.backdropOpacity = max(0, 1 - progress)
         }
 
         return transform
