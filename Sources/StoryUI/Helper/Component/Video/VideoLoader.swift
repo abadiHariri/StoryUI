@@ -87,6 +87,12 @@ private extension PlayerView {
         self.playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.removeFromSuperlayer()
         self.contentView.layer.addSublayer(self.playerLayer)
+        // The asset is a fully downloaded local file by this point, so the layer can
+        // render frame 0 without play(). Dropping the loading overlay here - rather
+        // than only in the `.playing` KVO branch below - keeps a story that is paused
+        // across the download (host `isPaused`, or a press-and-hold) from sitting
+        // behind an opaque black view and a spinner for as long as the pause lasts.
+        removeActivityIndicatory()
         state = .ready
         mediaState?(.ready, duration)
         addObserverToVideo()

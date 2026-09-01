@@ -29,10 +29,11 @@ struct StoryDetailView: View {
     @State private var isTapDisabled: Bool = false
 
     // MARK: Press-and-hold to pause
-    /// True from touch-down until lift, drift past `holdMovementTolerance`, or
-    /// system cancellation. `@GestureState` reverts on all three, which is the
-    /// entire release + interruption path - no timers, nothing to leak when the
-    /// host tears the story down mid-drag.
+    /// True from touch-down until the finger LIFTS, or the system cancels the
+    /// touch. `@GestureState` reverts on both, which is the entire release +
+    /// interruption path - no timers, nothing to leak when the host tears the
+    /// story down mid-drag. Drift deliberately does NOT end it: see
+    /// `Constant.holdMovementTolerance`.
     @GestureState private var isPressing: Bool = false
     /// When the current touch went down; nil when no finger is on the story.
     @State private var pressStartedAt: Date?
@@ -76,6 +77,12 @@ struct StoryDetailView: View {
             resetProgress()
             playVideo()
         }
+        .onChange(of: viewModel.isDragging) { _ in
+            // A dismiss drag freezes the story for its whole duration. Going
+            // through the one edge detector means a snap-back resumes, while a
+            // drag released under a host pause or a live hold does not.
+            applyPauseStateIfNeeded()
+        }
         .onChange(of: isPressing) { pressing in
             // isPressing is local @GestureState, so unlike `isPaused` this
             // onChange IS reliable - it never crosses the custom fullscreen
@@ -93,15 +100,24 @@ struct StoryDetailView: View {
             }
         }
         .onDisappear {
-            // Page recycling or a completed drag-to-dismiss can tear the view
-            // down mid-hold. Nothing to resume afterwards, but leave no latch.
-            endHoldIfNeeded()
+            // Page recycling or a completed drag-to-dismiss can tear the view down
+            // mid-hold. Drop the hold WITHOUT going through the resume edge: the
+            // view is going away, and configureProgress(with: false) would call
+            // player.play() on the way out. `lastAppliedPauseState` is left alone
+            // on purpose - if this instance is ever reused the next tick sees the
+            // false edge and resumes properly then.
+            isHolding = false
+            suppressNextTap = false
+            pressStartedAt = nil
         }
         .onReceive(timer) { _ in
             // Level-triggered, so it is self-healing: if a release edge were ever
             // dropped, the next tick recomputes the hold from `isPressing` alone
-            // and clears it within 100ms.
-            updateHoldState()
+            // and clears it within 100ms. Skipped on the UIKit path, where
+            // `isPressing` is never written and this would clear a live hold.
+            if !usesUIKitGestures {
+                updateHoldState()
+            }
             // Checked every tick (rather than relying solely on onChange(of:))
             // since isPaused is often a computed Binding crossing into the
             // custom fullscreen window, where onChange doesn't reliably fire.
@@ -200,7 +216,20 @@ private extension StoryDetailView {
         // keep exactly the behaviour they have today.
         // Never use .highPriorityGesture here - it would let this pre-empt the
         // child taps and ask SwiftUI to win arbitration against the page pan.
+        // Inert on iOS 18+, where `usesUIKitGestures` stops the tick from acting
+        // on `isPressing` and the UILongPressGestureRecognizer below takes over.
         .simultaneousGesture(holdToPauseGesture)
+        // iOS 18+ only. Attached here rather than in StoryView so it sees only
+        // the media area: the footer, progress bar and close button hit-test
+        // above this view, so holding the like button cannot pause the story.
+        .storyHoldGesture { holding in
+            if holding {
+                setHolding(true)
+            } else {
+                pressStartedAt = nil
+                setHolding(false)
+            }
+        }
     }
 
     /// A `LongPressGesture` that can never succeed, used purely as a touch-down /
@@ -211,10 +240,15 @@ private extension StoryDetailView {
     /// documented revert-on-end-or-cancel - not what `LongPressGesture.Value`
     /// happens to mean mid-press.
     ///
-    /// Because it never recognizes it performs no action, never competes with the
-    /// tap gestures, and `maximumDistance` keeps being enforced for the *entire*
-    /// touch rather than only up to recognition (which is where UIKit's
-    /// `UILongPressGestureRecognizer.allowableMovement` gives up).
+    /// Because it never recognizes it performs no action and never competes with
+    /// the tap gestures.
+    ///
+    /// `maximumDistance` is enforced for the *entire* touch precisely because the
+    /// gesture never recognizes (UIKit's `allowableMovement` stops applying once a
+    /// long press is recognized; this one never is). That is why
+    /// `Constant.holdMovementTolerance` must stay huge - at a small value ordinary
+    /// finger drift would fail the gesture and resume the story with the finger
+    /// still down, and SwiftUI would not re-arm it until the touch ended.
     var holdToPauseGesture: some Gesture {
         LongPressGesture(
             minimumDuration: Constant.holdGestureMaxDuration,
@@ -230,7 +264,25 @@ private extension StoryDetailView {
     /// else - that is what makes releasing a hold unable to resume a story the
     /// host is holding paused.
     var effectivePaused: Bool {
-        isPaused || isHolding
+        isPaused || isHolding || viewModel.isDragging
+    }
+
+    /// iOS 18+ drives the hold from a UILongPressGestureRecognizer, which applies
+    /// the threshold itself. Below 18 the SwiftUI gesture is a bare touch-down
+    /// signal and the threshold is measured on the timer tick instead.
+    var usesUIKitGestures: Bool {
+        if #available(iOS 18.0, *) { return true }
+        return false
+    }
+
+    /// The single entry point both OS paths use, so they cannot drift apart.
+    func setHolding(_ holding: Bool) {
+        guard holding != isHolding else { return }
+        isHolding = holding
+        // Armed at engage, strictly before the finger lifts, so the tap that
+        // fires on release is swallowed under every callback ordering.
+        if holding { suppressNextTap = true }
+        applyPauseStateIfNeeded()
     }
 
     /// Level-triggered on `isPressing`, so a dropped release edge heals itself.
@@ -239,18 +291,11 @@ private extension StoryDetailView {
             guard isPressing, let started = pressStartedAt else { return false }
             return Date().timeIntervalSince(started) >= Constant.holdToPauseDuration
         }()
-        guard shouldHold != isHolding else { return }
-        isHolding = shouldHold
-        // Invariant: the swallow latch is armed exactly when the story actually
-        // paused from a hold - same line, same condition. A press that never
-        // crossed the threshold arms nothing and pauses nothing.
-        if shouldHold { suppressNextTap = true }
+        setHolding(shouldHold)
     }
 
     func endHoldIfNeeded() {
-        guard isHolding else { return }
-        isHolding = false
-        applyPauseStateIfNeeded()
+        setHolding(false)
     }
 
     /// The ONE writer of `lastAppliedPauseState` and the ONE caller of
@@ -277,6 +322,11 @@ private extension StoryDetailView {
     }
 
     func getAngle(proxy: GeometryProxy) -> Angle {
+        // The angle is derived from .global frames, so the dismiss transform
+        // applied above the TabView would otherwise skew every page as the story
+        // shrinks. The current page is centred (angle ~0) whenever a drag can
+        // start, so freezing at zero is invisible.
+        guard !viewModel.isDragging else { return .zero }
         let rotation: CGFloat = 45
         let progress = proxy.frame(in: .global).minX / proxy.size.width
         let degrees = rotation * progress

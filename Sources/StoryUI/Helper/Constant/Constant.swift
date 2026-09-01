@@ -22,12 +22,18 @@ enum Constant {
     static let holdToPauseDuration: TimeInterval = 0.3
 
     /// How far the finger may drift before the press stops counting as a hold.
-    /// Deliberately at the paging scroll view's ~10pt pan slop and well under a
-    /// host drag-to-dismiss threshold, so a page swipe or a vertical drag always
-    /// releases the hold *before* it becomes a page turn or a dismiss.
-    /// Never raise this to .infinity - that is what freezes the story through an
-    /// entire drag-dismiss.
-    static let holdMovementTolerance: CGFloat = 10
+    ///
+    /// Deliberately huge. A finger resting on the screen drifts tens of points
+    /// over a few seconds, and a tight tolerance would end the hold - resuming
+    /// the story with the finger still down. The requirement is the opposite:
+    /// while the finger is held the story must never continue, so only LIFTING
+    /// (or a system cancellation) may release it.
+    ///
+    /// The trade this accepts: a page swipe or a drag-to-dismiss that takes
+    /// longer than `holdToPauseDuration` also engages the hold, so the story
+    /// stays frozen for the duration of that drag and resumes on lift. That is
+    /// invisible mid-transition, and it is the correct side to err on here.
+    static let holdMovementTolerance: CGFloat = 10_000
 
     /// A `minimumDuration` no real interaction reaches, which turns the
     /// LongPressGesture into a pure touch-down / touch-up signal: it can only end
@@ -36,4 +42,24 @@ enum Constant {
     /// than `.infinity` so the degenerate case (an hour-long press) fails safe by
     /// resuming, rather than wedging.
     static let holdGestureMaxDuration: TimeInterval = 60 * 60
+
+    // MARK: Drag to dismiss
+
+    /// Past this many points of vertical drag, letting go dismisses.
+    static let dismissCommitDistance: CGFloat = 150
+
+    /// A flick this fast dismisses even if it never travelled `dismissCommitDistance`.
+    static let dismissCommitVelocity: CGFloat = 900
+
+    /// The story shrinks by distance/700 and the backdrop fades by distance/400,
+    /// matching the host app's fullscreen image gallery exactly.
+    static let dismissScaleDivisor: CGFloat = 700
+    static let dismissOpacityDivisor: CGFloat = 400
+
+    /// Where the story settles as it flies away.
+    static let dismissFinalScale: CGFloat = 0.75
+
+    /// Only used by the pre-iOS-18 SwiftUI fallback, which has to out-wait
+    /// TabView's paging pan rather than out-rank it.
+    static let dismissFallbackMinimumDistance: CGFloat = 30
 }
