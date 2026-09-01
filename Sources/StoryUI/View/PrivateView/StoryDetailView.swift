@@ -28,6 +28,21 @@ struct StoryDetailView: View {
     @State private var lastAppliedPauseState: Bool = false
     @State private var isTapDisabled: Bool = false
 
+    // MARK: Press-and-hold to pause
+    /// True from touch-down until lift, drift past `holdMovementTolerance`, or
+    /// system cancellation. `@GestureState` reverts on all three, which is the
+    /// entire release + interruption path - no timers, nothing to leak when the
+    /// host tears the story down mid-drag.
+    @GestureState private var isPressing: Bool = false
+    /// When the current touch went down; nil when no finger is on the story.
+    @State private var pressStartedAt: Date?
+    /// True only once a press has outlasted `Constant.holdToPauseDuration`, i.e.
+    /// the story is paused *because of* the hold. The input to `effectivePaused`.
+    @State private var isHolding: Bool = false
+    /// Latched when a hold engages. Swallows the trailing tap that fires when the
+    /// finger lifts.
+    @State private var suppressNextTap: Bool = false
+
     var body: some View {
 
         GeometryReader { proxy in
@@ -61,15 +76,37 @@ struct StoryDetailView: View {
             resetProgress()
             playVideo()
         }
+        .onChange(of: isPressing) { pressing in
+            // isPressing is local @GestureState, so unlike `isPaused` this
+            // onChange IS reliable - it never crosses the custom fullscreen
+            // window boundary that motivated the polling below.
+            if pressing {
+                // A brand new touch sequence. Clear the swallow latch here so it
+                // can never outlive the press that set it.
+                suppressNextTap = false
+                pressStartedAt = Date()
+            } else {
+                pressStartedAt = nil
+                // Resume on the same runloop turn as the lift rather than up to
+                // 100ms later. Safe because it goes through the one edge detector.
+                endHoldIfNeeded()
+            }
+        }
+        .onDisappear {
+            // Page recycling or a completed drag-to-dismiss can tear the view
+            // down mid-hold. Nothing to resume afterwards, but leave no latch.
+            endHoldIfNeeded()
+        }
         .onReceive(timer) { _ in
+            // Level-triggered, so it is self-healing: if a release edge were ever
+            // dropped, the next tick recomputes the hold from `isPressing` alone
+            // and clears it within 100ms.
+            updateHoldState()
             // Checked every tick (rather than relying solely on onChange(of:))
             // since isPaused is often a computed Binding crossing into the
             // custom fullscreen window, where onChange doesn't reliably fire.
-            if isPaused != lastAppliedPauseState {
-                lastAppliedPauseState = isPaused
-                configureProgress(with: isPaused)
-            }
-            guard !isPaused else { return }
+            applyPauseStateIfNeeded()
+            guard !effectivePaused else { return }
             startProgress()
         }
     }
@@ -141,7 +178,9 @@ private extension StoryDetailView {
 
     @ViewBuilder
     func tapStory() -> some View {
-        HStack {
+        // spacing: 0 - the default 8pt gap was a dead strip down the middle of
+        // the screen where taps did nothing, and would be one for holds too.
+        HStack(spacing: 0) {
             Rectangle()
                 .fill(.black.opacity(0.01))
                 .onTapGesture {
@@ -153,6 +192,88 @@ private extension StoryDetailView {
                     tapNextStory()
                 }
         }
+        // On the CONTAINER, not on each Rectangle: one press signal for the whole
+        // media area, and a parent gesture composing with its children's is
+        // well-defined where two gesture modifiers on one view are not.
+        // .simultaneousGesture requires nothing to fail and blocks nothing, so
+        // tap-to-advance, the TabView page pan and a host's drag-to-dismiss all
+        // keep exactly the behaviour they have today.
+        // Never use .highPriorityGesture here - it would let this pre-empt the
+        // child taps and ask SwiftUI to win arbitration against the page pan.
+        .simultaneousGesture(holdToPauseGesture)
+    }
+
+    /// A `LongPressGesture` that can never succeed, used purely as a touch-down /
+    /// touch-up signal.
+    ///
+    /// The `updating` closure deliberately ignores `currentState` and writes an
+    /// unconditional `true`, so the only behaviour relied on is `@GestureState`'s
+    /// documented revert-on-end-or-cancel - not what `LongPressGesture.Value`
+    /// happens to mean mid-press.
+    ///
+    /// Because it never recognizes it performs no action, never competes with the
+    /// tap gestures, and `maximumDistance` keeps being enforced for the *entire*
+    /// touch rather than only up to recognition (which is where UIKit's
+    /// `UILongPressGestureRecognizer.allowableMovement` gives up).
+    var holdToPauseGesture: some Gesture {
+        LongPressGesture(
+            minimumDuration: Constant.holdGestureMaxDuration,
+            maximumDistance: Constant.holdMovementTolerance
+        )
+        .updating($isPressing) { _, state, _ in
+            state = true
+        }
+    }
+
+    /// Host pause OR press-and-hold. The single source of truth for "should this
+    /// story be frozen right now". Every pause decision reads this and nothing
+    /// else - that is what makes releasing a hold unable to resume a story the
+    /// host is holding paused.
+    var effectivePaused: Bool {
+        isPaused || isHolding
+    }
+
+    /// Level-triggered on `isPressing`, so a dropped release edge heals itself.
+    func updateHoldState() {
+        let shouldHold: Bool = {
+            guard isPressing, let started = pressStartedAt else { return false }
+            return Date().timeIntervalSince(started) >= Constant.holdToPauseDuration
+        }()
+        guard shouldHold != isHolding else { return }
+        isHolding = shouldHold
+        // Invariant: the swallow latch is armed exactly when the story actually
+        // paused from a hold - same line, same condition. A press that never
+        // crossed the threshold arms nothing and pauses nothing.
+        if shouldHold { suppressNextTap = true }
+    }
+
+    func endHoldIfNeeded() {
+        guard isHolding else { return }
+        isHolding = false
+        applyPauseStateIfNeeded()
+    }
+
+    /// The ONE writer of `lastAppliedPauseState` and the ONE caller of
+    /// `configureProgress(with:)`. Idempotent, so the eager release path and the
+    /// 0.1s tick can never double-apply, and neither can resume behind a host
+    /// pause: with `isPaused` true there is simply no edge to act on.
+    func applyPauseStateIfNeeded() {
+        let paused = effectivePaused
+        guard paused != lastAppliedPauseState else { return }
+        lastAppliedPauseState = paused
+        configureProgress(with: paused)
+    }
+
+    /// `isHolding`       -> the tap was delivered before the release edge ran.
+    /// `suppressNextTap` -> a hold engaged during the sequence that produced it.
+    ///
+    /// Clearing on consume *as well as* at the next touch-down bounds the damage
+    /// to exactly one tap in the pathological case where a touch-down is
+    /// coalesced away (a synthetic/UI-test tap in a single runloop turn).
+    func shouldSwallowTapAfterHold() -> Bool {
+        guard isHolding || suppressNextTap else { return false }
+        suppressNextTap = false
+        return true
     }
 
     func getAngle(proxy: GeometryProxy) -> Angle {
@@ -210,7 +331,7 @@ private extension StoryDetailView {
     }
 
     func startProgress() {
-        guard !isPaused else { return }
+        guard !effectivePaused else { return }
 
         let index = getCurrentIndex()
         let story = getStory(with: index)
@@ -238,6 +359,7 @@ private extension StoryDetailView {
     }
 
     func tapNextStory() {
+        guard !shouldSwallowTapAfterHold() else { return }
         configureTapScreen()
         guard !isTapDisabled else { return }
         if (timerProgress + 1) > CGFloat(model.stories.count) {
@@ -250,6 +372,7 @@ private extension StoryDetailView {
     }
 
     func tapPreviousStory() {
+        guard !shouldSwallowTapAfterHold() else { return }
         configureTapScreen()
         guard !isTapDisabled else { return }
         if (timerProgress - 1) < 0 {
@@ -295,6 +418,13 @@ private extension StoryDetailView {
     }
 
     func playVideo() {
+        // playVideo() is also reached from .onChange(of: viewModel.currentStoryUser)
+        // and .onChange(of: state) (driven by PlayerView's timeControlStatus KVO
+        // in VideoLoader), neither of which consults the pause state. Without this
+        // guard a video that finishes buffering *during* a pause resumes audio
+        // behind a frozen progress bar.
+        guard !effectivePaused else { return }
+
         let index = getCurrentIndex()
         let currentUser = viewModel.currentStoryUser == model.id
         let video = model.stories[index].config.mediaType == .video
