@@ -96,6 +96,13 @@ private extension ImageLoader {
        imageView.contentMode = .scaleAspectFit
    }
 }
+
+extension ImageLoader {
+    /// Named `apply` rather than `contentMode` so it cannot shadow UIView's own.
+    func apply(_ mode: StoryContentMode) {
+        imageView.contentMode = mode.imageContentMode
+    }
+}
 // MARK: - Const funcs
 extension ImageLoader {
     

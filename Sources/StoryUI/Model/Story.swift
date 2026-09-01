@@ -26,7 +26,6 @@ public struct Story: Identifiable, Hashable {
         self.duration = duration
         self.config = config
         self.isLiked = isLiked
-        Constant.storySecond = duration
     }
 }
 

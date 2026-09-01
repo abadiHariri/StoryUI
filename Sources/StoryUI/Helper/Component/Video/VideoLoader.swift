@@ -16,6 +16,9 @@ final class PlayerView: UIView {
     var duration: Double = 0.0
     var state: MediaState = .notStarted
     var mediaState: ((MediaState, Double) -> ())?
+    var videoGravity: AVLayerVideoGravity = .resizeAspectFill {
+        didSet { playerLayer.videoGravity = videoGravity }
+    }
 
     let contentView = UIView()
 
@@ -83,7 +86,7 @@ private extension PlayerView {
         self.player?.automaticallyWaitsToMinimizeStalling = false
         self.getVideoLength(videoURL: url)
         self.playerLayer.player = self.player
-        self.playerLayer.videoGravity = .resizeAspectFill
+        self.playerLayer.videoGravity = videoGravity
         self.playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.removeFromSuperlayer()
         self.contentView.layer.addSublayer(self.playerLayer)

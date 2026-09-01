@@ -15,6 +15,10 @@ struct StoryDetailView: View {
     @State var model: StoryUIModel
     @Binding var isPresented: Bool
     @Binding var isPaused: Bool
+    var transitionStyle: StoryTransitionStyle = .cube()
+    var imageDuration: TimeInterval = Constant.storySecond
+    var imageContentMode: StoryContentMode = .fit
+    var videoContentMode: StoryContentMode = .fill
 
     @State var timer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
     @State var timerProgress: CGFloat = 0
@@ -65,11 +69,11 @@ struct StoryDetailView: View {
                 getProgressBar(with: index)
                 ,alignment: .top
             )
-            .rotation3DEffect(
-                getAngle(proxy: proxy),
-                axis: (x: 0, y: 1, z: 0),
-                anchor: proxy.frame(in: .global).minX > 0 ? .leading : .trailing,
-                perspective: 2.5
+            .storyTransition(
+                transitionStyle,
+                progress: getProgress(proxy: proxy),
+                width: proxy.size.width,
+                isFrozen: viewModel.isDragging
             )
         }
         .onChange(of: viewModel.currentStoryUser) { newValue in
@@ -135,7 +139,10 @@ private extension StoryDetailView {
     func getStoryView(with index: Int, story: Story) -> some View {
         switch story.config.mediaType {
         case .image:
-            ImageView(imageURL: story.mediaURL) {
+            ImageView(
+                imageURL: story.mediaURL,
+                contentMode: resolvedContentMode(for: story)
+            ) {
                 start(index: index)
             }
             .onAppear {
@@ -145,7 +152,8 @@ private extension StoryDetailView {
             VideoView(
                 videoURL: story.mediaURL,
                 state: $state,
-                player: player
+                player: player,
+                contentMode: resolvedContentMode(for: story)
             ) { media, duration in
                 model.stories[index].duration = duration
                 start(index: index)
@@ -321,16 +329,11 @@ private extension StoryDetailView {
         return true
     }
 
-    func getAngle(proxy: GeometryProxy) -> Angle {
-        // The angle is derived from .global frames, so the dismiss transform
-        // applied above the TabView would otherwise skew every page as the story
-        // shrinks. The current page is centred (angle ~0) whenever a drag can
-        // start, so freezing at zero is invisible.
-        guard !viewModel.isDragging else { return .zero }
-        let rotation: CGFloat = 45
-        let progress = proxy.frame(in: .global).minX / proxy.size.width
-        let degrees = rotation * progress
-        return Angle(degrees: degrees)
+    /// The page's offset from centre, in page-widths. 0 centred, +1 one full
+    /// width to the right. Every transition style is a function of this.
+    func getProgress(proxy: GeometryProxy) -> CGFloat {
+        guard proxy.size.width > 0 else { return 0 }
+        return proxy.frame(in: .global).minX / proxy.size.width
     }
 
     func resetProgress() {
@@ -392,7 +395,7 @@ private extension StoryDetailView {
             }
             if timerProgress < CGFloat(model.stories.count) {
                 if story.isReady {
-                    getProgressBarFrame(duration: story.duration)
+                    getProgressBarFrame(duration: resolvedDuration(for: story))
                 }
             } else {
                 updateStory()
@@ -436,6 +439,19 @@ private extension StoryDetailView {
         if !model.stories[index].isReady {
             model.stories[index].isReady = true
         }
+    }
+
+    /// Video runs for its own measured length; an image runs for whatever the
+    /// host configured, per story first and then viewer-wide.
+    func resolvedDuration(for story: Story) -> Double {
+        guard story.config.mediaType == .image else { return story.duration }
+        return story.config.imageDuration ?? imageDuration
+    }
+
+    /// Per-story override first, then the viewer-wide default for that media type.
+    func resolvedContentMode(for story: Story) -> StoryContentMode {
+        if let mode = story.config.contentMode { return mode }
+        return story.config.mediaType == .image ? imageContentMode : videoContentMode
     }
 
     func getProgressBarFrame(duration: Double) {

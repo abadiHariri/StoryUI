@@ -19,6 +19,10 @@ public struct StoryView<Footer: View>: View {
     private var selectedIndex: Int
     private var footer: (StoryUIModel) -> Footer
     private var isDragToDismissEnabled: Bool
+    private var transitionStyle: StoryTransitionStyle
+    private var imageDuration: TimeInterval
+    private var imageContentMode: StoryContentMode
+    private var videoContentMode: StoryContentMode
     private var onDismissProgress: ((CGFloat) -> Void)?
     private var onDismiss: (() -> Void)?
 
@@ -33,6 +37,11 @@ public struct StoryView<Footer: View>: View {
     ///   - isPresented: to hide and show for closing storyView
     ///   - isPaused: pauses the auto-advance timer and video playback, e.g. while the host presents a sheet on top of the story
     ///   - isDragToDismissEnabled: set false to suppress drag-to-dismiss, e.g. while the story is zoomed
+    ///   - transitionStyle: how bundles look as they move between pages, on swipe and on auto-advance
+    ///   - imageDuration: how long an image stays on screen before auto-advancing; a story can override
+    ///     it via `StoryConfiguration(mediaType:imageDuration:)`. Video always runs its own length.
+    ///   - imageContentMode: how images are scaled into the frame; per-story override via `StoryConfiguration`
+    ///   - videoContentMode: how video is scaled into the frame; per-story override via `StoryConfiguration`
     ///   - onDismissProgress: 0...1 as the story is dragged away, for hosts that fade their own chrome
     ///   - onDismiss: called once a dismiss drag commits, after the fly-away animation
     ///   - footer: host-supplied overlay rendered at the bottom of the currently visible story
@@ -42,6 +51,10 @@ public struct StoryView<Footer: View>: View {
         isPresented: Binding<Bool>,
         isPaused: Binding<Bool> = .constant(false),
         isDragToDismissEnabled: Bool = true,
+        transitionStyle: StoryTransitionStyle = .cube(),
+        imageDuration: TimeInterval = 5,
+        imageContentMode: StoryContentMode = .fit,
+        videoContentMode: StoryContentMode = .fill,
         onDismissProgress: ((CGFloat) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
         @ViewBuilder footer: @escaping (StoryUIModel) -> Footer
@@ -51,6 +64,10 @@ public struct StoryView<Footer: View>: View {
         self._isPresented = isPresented
         self.isPaused = isPaused
         self.isDragToDismissEnabled = isDragToDismissEnabled
+        self.transitionStyle = transitionStyle
+        self.imageDuration = imageDuration
+        self.imageContentMode = imageContentMode
+        self.videoContentMode = videoContentMode
         self.onDismissProgress = onDismissProgress
         self.onDismiss = onDismiss
         self.footer = footer
@@ -73,7 +90,11 @@ public struct StoryView<Footer: View>: View {
                                 viewModel: viewModel,
                                 model: model,
                                 isPresented: $isPresented,
-                                isPaused: isPaused
+                                isPaused: isPaused,
+                                transitionStyle: transitionStyle,
+                                imageDuration: imageDuration,
+                                imageContentMode: imageContentMode,
+                                videoContentMode: videoContentMode
                             )
                         }
                     }
@@ -192,6 +213,10 @@ public extension StoryView where Footer == EmptyView {
         isPresented: Binding<Bool>,
         isPaused: Binding<Bool> = .constant(false),
         isDragToDismissEnabled: Bool = true,
+        transitionStyle: StoryTransitionStyle = .cube(),
+        imageDuration: TimeInterval = 5,
+        imageContentMode: StoryContentMode = .fit,
+        videoContentMode: StoryContentMode = .fill,
         onDismissProgress: ((CGFloat) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil
     ) {
@@ -201,6 +226,10 @@ public extension StoryView where Footer == EmptyView {
             isPresented: isPresented,
             isPaused: isPaused,
             isDragToDismissEnabled: isDragToDismissEnabled,
+            transitionStyle: transitionStyle,
+            imageDuration: imageDuration,
+            imageContentMode: imageContentMode,
+            videoContentMode: videoContentMode,
             onDismissProgress: onDismissProgress,
             onDismiss: onDismiss
         ) { _ in EmptyView() }
