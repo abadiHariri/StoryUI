@@ -69,33 +69,31 @@ struct StoryHoldGesture: UIGestureRecognizerRepresentable {
 
 // MARK: - Drag to dismiss
 
-/// Vertical drag-to-dismiss. The mirror image of the horizontal pager gesture in
-/// the host app: this one owns the vertical axis and refuses horizontal, so a
-/// page swipe and a dismiss drag can never both claim the same touch.
+/// Vertical drag-to-dismiss.
+///
+/// Both this and TabView's paging pan track every touch from the start - neither
+/// blocks the other - and the axis is decided only once the finger has travelled
+/// far enough to prove intent. Deciding earlier (in `gestureRecognizerShouldBegin`,
+/// which UIKit calls at ~10pt) misreads page swipes as dismisses, because a
+/// horizontal swipe routinely starts with a slight vertical component.
 @available(iOS 18.0, *)
 struct StoryDismissGesture: UIGestureRecognizerRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+
+        private enum Axis { case undecided, vertical, horizontal }
+
         /// TabView's paging pan, captured the first time UIKit asks us about it.
         private weak var pagingPan: UIPanGestureRecognizer?
+        private var axis: Axis = .undecided
 
-        /// Suspends paging for the duration of a dismiss drag. Disabling a
-        /// recognizer mid-touch force-cancels it, which also snaps any partial
-        /// page back - exactly what we want when the drag turns out to be vertical.
-        func suspendPaging(_ suspend: Bool) {
-            guard let pagingPan, pagingPan.isEnabled == suspend else { return }
-            pagingPan.isEnabled = !suspend
-        }
+        var isDismissing: Bool { axis == .vertical }
 
-        /// Only begin for a clearly vertical drag. Everything else is left to the
-        /// pager, so this never competes for a horizontal swipe.
+        /// Always begin. The axis is decided later, in `shouldDrag`, once there is
+        /// enough travel to tell a page swipe from a dismiss - UIKit asks this at
+        /// ~10pt, where the two are genuinely indistinguishable.
         func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard
-                let pan = gestureRecognizer as? UIPanGestureRecognizer,
-                let view = pan.view
-            else { return false }
-            let translation = pan.translation(in: view)
-            return abs(translation.y) > abs(translation.x)
+            true
         }
 
         func gestureRecognizer(
@@ -103,13 +101,48 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
             // The paging pan is the one living on a UIScrollView. Hold a weak
-            // reference so `.began` can suspend it.
+            // reference so we can suspend it once we know the drag is vertical.
             if pagingPan == nil,
                otherGestureRecognizer.view is UIScrollView,
                let pan = otherGestureRecognizer as? UIPanGestureRecognizer {
                 pagingPan = pan
             }
+            // Never block the pager: until the axis is settled both must be free
+            // to track, otherwise a swipe is dead before we know what it was.
             return true
+        }
+
+        /// True once this touch has proved itself a vertical dismiss. The decision
+        /// latches, so a drag cannot flip axis halfway and stutter.
+        func shouldDrag(translation: CGPoint) -> Bool {
+            switch axis {
+            case .vertical:
+                return true
+            case .horizontal:
+                return false
+            case .undecided:
+                let dx = abs(translation.x)
+                let dy = abs(translation.y)
+                guard max(dx, dy) >= Constant.dismissAxisLockDistance else { return false }
+
+                if dy > dx * Constant.dismissAxisLockRatio {
+                    axis = .vertical
+                    // Only now, with the axis settled, is it safe to take paging
+                    // out. Disabling force-cancels it, snapping any partial page back.
+                    pagingPan?.isEnabled = false
+                } else {
+                    axis = .horizontal
+                }
+                return axis == .vertical
+            }
+        }
+
+        /// Restores paging and clears the latch, ready for the next touch.
+        func finish() {
+            if let pagingPan, !pagingPan.isEnabled {
+                pagingPan.isEnabled = true
+            }
+            axis = .undecided
         }
     }
 
@@ -137,17 +170,19 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
         _ recognizer: UIPanGestureRecognizer,
         context: Context
     ) {
-        let translation = recognizer.translation(in: recognizer.view).y
+        let translation = recognizer.translation(in: recognizer.view)
 
         switch recognizer.state {
-        case .began:
-            context.coordinator.suspendPaging(true)
-            onChanged(translation)
-        case .changed:
-            onChanged(translation)
+        case .began, .changed:
+            guard context.coordinator.shouldDrag(translation: translation) else { return }
+            onChanged(translation.y)
         case .ended, .cancelled, .failed:
-            context.coordinator.suspendPaging(false)
-            onEnded(translation, recognizer.velocity(in: recognizer.view).y)
+            let wasDismissing = context.coordinator.isDismissing
+            context.coordinator.finish()
+            // A touch that turned out to be a page swipe never reported anything,
+            // so it has nothing to finish either.
+            guard wasDismissing else { return }
+            onEnded(translation.y, recognizer.velocity(in: recognizer.view).y)
         default:
             break
         }
@@ -188,7 +223,10 @@ struct StoryDismissGestureModifier: ViewModifier {
                 DragGesture(minimumDistance: Constant.dismissFallbackMinimumDistance)
                     .onChanged { value in
                         guard isEnabled else { return }
-                        guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                        let dx = abs(value.translation.width)
+                        let dy = abs(value.translation.height)
+                        guard dy >= Constant.dismissAxisLockDistance,
+                              dy > dx * Constant.dismissAxisLockRatio else { return }
                         onChanged(value.translation.height)
                     }
                     .onEnded { value in

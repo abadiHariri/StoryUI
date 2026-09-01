@@ -62,4 +62,14 @@ enum Constant {
     /// Only used by the pre-iOS-18 SwiftUI fallback, which has to out-wait
     /// TabView's paging pan rather than out-rank it.
     static let dismissFallbackMinimumDistance: CGFloat = 30
+
+    /// How far a touch must travel before we decide whether it is a page swipe or
+    /// a dismiss. UIKit asks `gestureRecognizerShouldBegin` at ~10pt, which is far
+    /// too early: a horizontal swipe routinely starts with a slight vertical
+    /// component, so deciding there classifies real page swipes as dismisses.
+    static let dismissAxisLockDistance: CGFloat = 16
+
+    /// How much more vertical than horizontal a drag must be to count as a
+    /// dismiss. Anything less decisive is left to the pager.
+    static let dismissAxisLockRatio: CGFloat = 1.2
 }
