@@ -30,7 +30,6 @@ public struct StoryView<Footer: View>: View {
     // Drag to dismiss
     @State private var dragOffset: CGFloat = 0
     @State private var isFlyingAway = false
-    @State private var storySize: CGSize = .zero
     /// A finger is down right now. Distinct from `viewModel.isDragging`, which
     /// stays true through the snap-back animation after the finger has lifted.
     @State private var isDragActive = false
@@ -123,17 +122,6 @@ public struct StoryView<Footer: View>: View {
                 .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Measured rather than assumed: UIScreen.main.bounds is the device,
-                // not this view. Any mismatch skews the circle styles (which square
-                // the frame using width/height) and the fly-away distance.
-                // Read before the transforms below, so it stays the layout size.
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear { storySize = proxy.size }
-                            .onChange(of: proxy.size) { storySize = $0 }
-                    }
-                )
                 // Story, footer and chrome move as one unit, like the host's
                 // fullscreen image gallery.
                 .modifier(StoryDismissTransformModifier(style: dismissStyle, transform: transform))
@@ -155,9 +143,7 @@ public struct StoryView<Footer: View>: View {
 
     // MARK: Drag to dismiss
 
-    private var effectiveSize: CGSize {
-        storySize.width > 0 && storySize.height > 0 ? storySize : UIScreen.main.bounds.size
-    }
+    private var effectiveSize: CGSize { UIScreen.main.bounds.size }
 
     /// One resolved value for the whole drag, so every modifier below reads from a
     /// single source and cannot disagree with the others mid-animation.

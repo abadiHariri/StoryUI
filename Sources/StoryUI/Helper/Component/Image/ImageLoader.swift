@@ -43,13 +43,19 @@ final class ImageLoader: UIView {
         // stop video if it's playing before image request
         NotificationCenter.default.post(name: .stopVideo, object: nil)
 
-        // Cache hit: swap straight across on this run loop turn. Clearing the image
-        // first and filling it a turn later left one blank frame on every advance
-        // between cached images - most visible caught mid page transition.
-        if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)),
-           let cached = UIImage(data: cachedResponse.data) {
-            imageView.image = cached
-            imageIsLoaded()
+        // Cache hit: decode off the main thread, and leave the CURRENT image in
+        // place until the new one is ready. Blanking first is what left an empty
+        // frame on every advance between cached images; decoding synchronously to
+        // avoid that just moved the cost into SwiftUI's update pass instead.
+        if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)) {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let image = UIImage(data: cachedResponse.data)
+                DispatchQueue.main.async {
+                    guard let self, self.imageURL == imageURL else { return }
+                    self.imageView.image = image
+                    imageIsLoaded()
+                }
+            }
             return
         }
 
