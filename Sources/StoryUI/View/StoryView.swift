@@ -91,6 +91,7 @@ public struct StoryView<Footer: View>: View {
                     .ignoresSafeArea()
 
                 ZStack {
+                    
                     TabView(selection: $viewModel.currentStoryUser) {
                         ForEach(viewModel.stories) { model in
                             StoryDetailView(
@@ -103,14 +104,24 @@ public struct StoryView<Footer: View>: View {
                                 imageContentMode: imageContentMode,
                                 videoContentMode: videoContentMode
                             )
+                            .addGeometryGroup()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            .addGeometryGroup()
                         }
                     }
+                    .addGeometryGroup()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .addGeometryGroup()
+                    
                     VStack {
-                        Spacer()
+                        
                         if let model = viewModel.getStoryModel() {
                             footer(model)
                         }
+                        
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .addGeometryGroup()
                     // Hidden while holding, and for the whole dismiss drag.
                     // Driven by booleans, never by the per-frame drag offset:
                     // an implicit animation re-triggered every frame queues
@@ -121,7 +132,7 @@ public struct StoryView<Footer: View>: View {
                 }
                 .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 // Story, footer and chrome move as one unit, like the host's
                 // fullscreen image gallery.
                 .modifier(StoryDismissTransformModifier(style: dismissStyle, transform: transform))
@@ -291,3 +302,17 @@ public extension StoryView where Footer == EmptyView {
         ) { _ in EmptyView() }
     }
 }
+
+public extension View {
+
+   
+    
+    @ViewBuilder func addGeometryGroup() -> some View {
+        if #available(iOS 17.0, *) {
+            geometryGroup()
+        } else {
+            self
+        }
+    }
+}
+   
