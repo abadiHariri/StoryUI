@@ -7,6 +7,7 @@
 
 import Combine
 import UIKit
+import ImageIO
 
 final class ImageLoader: UIView {
     
@@ -25,11 +26,6 @@ final class ImageLoader: UIView {
         fatalError("init(coder:) has not been implemented")
     }
     
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        addConst()
-    }
-    
     func loadImageWithUrl(_ url: String?, imageIsLoaded: @escaping () -> Void) {
 
         guard let validatedUrl = url else {
@@ -45,18 +41,25 @@ final class ImageLoader: UIView {
 
         guard let imageURL else { return }
 
-        imageView.image = nil
         // stop video if it's playing before image request
         NotificationCenter.default.post(name: .stopVideo, object: nil)
 
+        // Cache hit. The disk read, the decode and the downsample all happen off
+        // the main thread, and the CURRENT image stays on screen until the new one
+        // is ready, so there is no blank frame either.
         if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)) {
-            DispatchQueue.main.async { [weak self] in
-                self?.imageView.image =  UIImage(data: cachedResponse.data)
-                imageIsLoaded()
+            Self.decodeQueue.async { [weak self] in
+                let image = Self.downsampledImage(from: cachedResponse.data)
+                DispatchQueue.main.async {
+                    guard let self, self.imageURL == imageURL else { return }
+                    self.imageView.image = image
+                    imageIsLoaded()
+                }
             }
             return
         }
 
+        imageView.image = nil
         addIndicator()
 
         URLSession.shared.dataTask(
@@ -68,17 +71,17 @@ final class ImageLoader: UIView {
                 return
             }
 
-            guard let data,
-                  let response,
-                  let image = UIImage(data: data)
-            else { return }
+            guard let data, let response else { return }
 
             URLCache.shared.storeCachedResponse(
                 .init(response: response, data: data),
                 for: .init( url: imageURL)
             )
 
+            let image = Self.downsampledImage(from: data)
+
             DispatchQueue.main.async {
+                guard self.imageURL == imageURL else { return }
                 self.imageView.image = image
                 imageIsLoaded()
                 self.activityIndicator.stopAnimating()
@@ -87,36 +90,102 @@ final class ImageLoader: UIView {
     }
 
 }
+
+// MARK: - Decoding
+
+private extension ImageLoader {
+
+    static let decodeQueue = DispatchQueue(
+        label: "StoryUI.ImageDecode",
+        qos: .userInitiated
+    )
+
+    /// Longest edge to keep, in pixels. A story fills the screen, so anything
+    /// beyond this is invisible detail that still costs memory and bandwidth on
+    /// every composite.
+    static var maxPixelSize: CGFloat {
+        let bounds = UIScreen.main.bounds
+        return max(bounds.width, bounds.height) * UIScreen.main.scale
+    }
+
+    /// Decodes and downsamples in one step, off the main thread.
+    ///
+    /// `UIImage(data:)` keeps the image at full source resolution and defers the
+    /// decode until the first draw - which lands on the MAIN thread, inside a
+    /// gesture. A 12MP camera photo is ~48MB decoded, and every frame that
+    /// composites it through a transform or a clip mask pays for that size. This
+    /// is the single largest cost in the whole story path.
+    ///
+    /// `kCGImageSourceShouldCacheImmediately` forces the decode to happen here,
+    /// on this background queue, so the first draw is already a plain blit.
+    static func downsampledImage(from data: Data) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return UIImage(data: data)
+        }
+
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ] as [CFString: Any] as CFDictionary
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: thumbnail)
+    }
+}
 // MARK: - Private Funcs
 private extension ImageLoader {
    func setupImageView() {
-       self.addSubview(imageView)
-       imageView.layer.cornerRadius = 12
-       imageView.clipsToBounds = true
+       addSubview(imageView)
+       // No cornerRadius/clipsToBounds here on purpose. A rounded, clipped layer
+       // is composited through an offscreen pass on every frame that an ancestor
+       // transform animates - a swipe or a dismiss drag - and on a fullscreen
+       // story the corners are off screen anyway. Rounding during a dismiss comes
+       // from the clip in StoryDismissTransformModifier instead.
        imageView.contentMode = .scaleAspectFit
+       // Once, in init. This used to run from layoutSubviews, which re-activated
+       // four fresh constraints on every single layout pass - so they accumulated
+       // without bound and fought each other, and the view visibly juddered under
+       // anything that laid out repeatedly, like a drag or a page swipe.
+       imageView.translatesAutoresizingMaskIntoConstraints = false
+       NSLayoutConstraint.activate([
+           imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+           imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
+           imageView.topAnchor.constraint(equalTo: topAnchor),
+           imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+       ])
    }
+}
+
+extension ImageLoader {
+    /// Named `apply` rather than `contentMode` so it cannot shadow UIView's own.
+    func apply(_ mode: StoryContentMode) {
+        imageView.contentMode = mode.imageContentMode
+    }
 }
 // MARK: - Const funcs
 extension ImageLoader {
-    
-    private func addConst() {
-        imageView.frame.size.width = self.frame.size.width
-        imageView.frame.size.height = self.frame.size.height
-        self.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: self.leadingAnchor,constant: 0),
-            imageView.rightAnchor.constraint(equalTo: self.rightAnchor,constant: 0),
-            imageView.bottomAnchor.constraint(equalTo: self.safeAreaLayoutGuide.bottomAnchor,constant: 0),
-            imageView.topAnchor.constraint(equalTo: self.topAnchor,constant: 0),
-        ])
-    }
-    
+
     private func addIndicator() {
-        activityIndicator.color = UIColor.lightGray.withAlphaComponent(0.7)
-        addSubview(activityIndicator)
-        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-        activityIndicator.centerXAnchor.constraint(equalTo: centerXAnchor).isActive = true
-        activityIndicator.centerYAnchor.constraint(equalTo: centerYAnchor).isActive = true
+        installIndicatorIfNeeded()
         activityIndicator.startAnimating()
+    }
+
+    /// Constraints installed exactly once. This used to add two fresh constraints
+    /// to the same indicator on every cache miss, so they piled up across story
+    /// changes and the resulting layout churn showed as judder.
+    private func installIndicatorIfNeeded() {
+        guard activityIndicator.superview == nil else { return }
+        activityIndicator.color = UIColor.lightGray.withAlphaComponent(0.7)
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(activityIndicator)
+        NSLayoutConstraint.activate([
+            activityIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
     }
 }

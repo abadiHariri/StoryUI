@@ -16,6 +16,9 @@ final class PlayerView: UIView {
     var duration: Double = 0.0
     var state: MediaState = .notStarted
     var mediaState: ((MediaState, Double) -> ())?
+    var videoGravity: AVLayerVideoGravity = .resizeAspectFill {
+        didSet { playerLayer.videoGravity = videoGravity }
+    }
 
     let contentView = UIView()
 
@@ -30,8 +33,8 @@ final class PlayerView: UIView {
     override init(frame: CGRect) {
         self.cacheManager = StoryVideoCacheManager()
         super.init(frame: frame)
-        self.layer.cornerRadius = 12
-        self.clipsToBounds = true
+        // See ImageLoader: an offscreen pass per frame for corners that are off
+        // screen. The dismiss clip supplies any rounding that is actually visible.
         setupPlayer()
     }
 
@@ -41,6 +44,17 @@ final class PlayerView: UIView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard playerLayer.frame != contentView.bounds else { return }
+        // CALayer animates frame changes implicitly, which would make the video
+        // lag a frame behind the view it sits in during a drag.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = contentView.bounds
+        CATransaction.commit()
+    }
 
     func startVideo(url: URL?) {
         guard let validatedUrl = url else { return }
@@ -83,17 +97,46 @@ private extension PlayerView {
         self.player?.automaticallyWaitsToMinimizeStalling = false
         self.getVideoLength(videoURL: url)
         self.playerLayer.player = self.player
-        self.playerLayer.videoGravity = .resizeAspectFill
+        self.playerLayer.videoGravity = videoGravity
         self.playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.removeFromSuperlayer()
         self.contentView.layer.addSublayer(self.playerLayer)
+        // The asset is a fully downloaded local file by this point, so the layer can
+        // render frame 0 without play(). Dropping the loading overlay here - rather
+        // than only in the `.playing` KVO branch below - keeps a story that is paused
+        // across the download (host `isPaused`, or a press-and-hold) from sitting
+        // behind an opaque black view and a spinner for as long as the pause lasts.
+        removeActivityIndicatory()
         state = .ready
         mediaState?(.ready, duration)
         addObserverToVideo()
     }
 
     func getVideoLength(videoURL: URL) {
-        duration = AVURLAsset(url: videoURL).duration.seconds
+        // `.duration` blocks the caller while the container is parsed. On the main
+        // thread that is a dropped frame at the start of every video story, right
+        // when a page transition is running. Load it off-thread and report the real
+        // duration when it lands; until then the story runs on the default.
+        let asset = AVURLAsset(url: videoURL)
+        if #available(iOS 16.0, *) {
+            Task { [weak self] in
+                guard let seconds = try? await asset.load(.duration).seconds,
+                      seconds.isFinite, seconds > 0 else { return }
+                await MainActor.run { self?.applyDuration(seconds) }
+            }
+        } else {
+            asset.loadValuesAsynchronously(forKeys: ["duration"]) { [weak self] in
+                let seconds = asset.duration.seconds
+                guard seconds.isFinite, seconds > 0 else { return }
+                DispatchQueue.main.async { self?.applyDuration(seconds) }
+            }
+        }
+    }
+
+    func applyDuration(_ seconds: Double) {
+        guard duration != seconds else { return }
+        duration = seconds
+        mediaState?(state, seconds)
     }
 
     func stopAndRestartVideo() {
@@ -186,17 +229,14 @@ private extension PlayerView {
     }
 
     func setupPlayer() {
-        self.addSubview(contentView)
-        contentView.frame.size.width = self.frame.size.width
-        contentView.frame.size.height = self.frame.size.height
-        self.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(contentView)
+        contentView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 0),
-            contentView.rightAnchor.constraint(equalTo: self.rightAnchor, constant: 0),
-            contentView.bottomAnchor.constraint(equalTo: self.safeAreaLayoutGuide.bottomAnchor, constant: 0),
-            contentView.topAnchor.constraint(equalTo: self.topAnchor, constant: 0),
+            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        playerLayer.frame = contentView.frame
     }
 
     func removeActivityIndicatory() {

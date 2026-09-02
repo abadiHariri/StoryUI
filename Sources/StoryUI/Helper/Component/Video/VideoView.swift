@@ -14,6 +14,7 @@ struct VideoView: UIViewRepresentable {
     var videoURL: String
     @Binding var state: MediaState
     var player: AVPlayer
+    var contentMode: StoryContentMode
     let mediaState: ((MediaState, Double) -> Void)?
     
     func makeUIView(context: Context) -> PlayerView {
@@ -30,6 +31,7 @@ struct VideoView: UIViewRepresentable {
             playerView.player = player
         }
         playerView.state = state
+        playerView.videoGravity = contentMode.videoGravity
         playerView.mediaState = { state, duration in
             mediaState?(state, duration)
         }
@@ -37,6 +39,7 @@ struct VideoView: UIViewRepresentable {
     }
     
     func updateUIView(_ playerView: PlayerView, context: Context) {
+        playerView.videoGravity = contentMode.videoGravity
         playerView.state = state
         playerView.startVideo(url: URL(string: videoURL))
         playerView.mediaState = { state, duration in
