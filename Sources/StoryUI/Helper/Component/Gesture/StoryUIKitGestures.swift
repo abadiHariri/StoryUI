@@ -56,9 +56,12 @@ struct StoryHoldGesture: UIGestureRecognizerRepresentable {
     func makeUIGestureRecognizer(context: Context) -> UILongPressGestureRecognizer {
         let recognizer = UILongPressGestureRecognizer()
         recognizer.minimumPressDuration = Constant.holdToPauseDuration
-        // Huge on purpose: a settled finger drifts, and drift must never resume
-        // the story. Only lifting or a system cancellation may end a hold.
-        recognizer.allowableMovement = Constant.holdMovementTolerance
+        // UIKit applies allowableMovement only UNTIL the press is recognized;
+        // after that the finger may move freely. That is exactly the rule wanted:
+        // a swipe never engages a hold, while drift never releases one. (The
+        // pre-iOS-18 SwiftUI gesture cannot express this, which is why it needs
+        // `holdMovementTolerance` to be huge instead.)
+        recognizer.allowableMovement = Constant.holdEngageMovementTolerance
         // Mandatory - without it the media view stops receiving touches and
         // tap-to-advance dies.
         recognizer.cancelsTouchesInView = false
@@ -100,6 +103,13 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
         private enum Axis { case undecided, vertical, horizontal }
 
         private var axis: Axis = .undecided
+
+        /// Translation at the instant the axis latched vertical. The finger has
+        /// already travelled `dismissAxisLockDistance` by then, so reporting the
+        /// raw translation as the first offset teleports the story that far in a
+        /// single unanimated frame. Subtracting it makes the first reported offset
+        /// exactly 0 - the same slop UIScrollView swallows when it starts scrolling.
+        private(set) var latchTranslation: CGPoint = .zero
 
         /// TabView's paging pan. Held weakly, and only ever suspended AFTER the
         /// axis has latched vertical on real evidence.
@@ -168,6 +178,7 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
                 guard max(dx, dy) >= Constant.dismissAxisLockDistance else { return false }
                 axis = dy > dx * Constant.dismissAxisLockRatio ? .vertical : .horizontal
                 if axis == .vertical {
+                    latchTranslation = translation
                     // Only here, with the axis settled on evidence, is it safe to
                     // take paging out - otherwise a sideways move part-way through
                     // a dismiss would turn the page underneath it. Deciding this
@@ -182,6 +193,7 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
         func finish() {
             restorePaging()
             axis = .undecided
+            latchTranslation = .zero
         }
 
         private func suspendPaging() {
@@ -229,14 +241,16 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
         switch recognizer.state {
         case .began, .changed:
             guard context.coordinator.shouldDrag(translation: translation) else { return }
-            onChanged(translation.y)
+            onChanged(translation.y - context.coordinator.latchTranslation.y)
         case .ended, .cancelled, .failed:
             let wasDismissing = context.coordinator.isDismissing
+            // Read before finish() clears the latch.
+            let offset = translation.y - context.coordinator.latchTranslation.y
             context.coordinator.finish()
             // A touch that turned out to be a page swipe never reported anything,
             // so it has nothing to finish either.
             guard wasDismissing else { return }
-            onEnded(translation.y, recognizer.velocity(in: recognizer.view).y)
+            onEnded(offset, recognizer.velocity(in: recognizer.view).y)
         default:
             break
         }
@@ -272,7 +286,12 @@ struct StoryHoldGestureModifier<SwiftUIGesture: Gesture>: ViewModifier {
 /// `DragGesture`, which still works but races TabView's paging pan - the same
 /// race the host app hits today, and not fixable without replacing TabView.
 struct StoryDismissGestureModifier: ViewModifier {
+    /// Reference box so the pre-iOS-18 gesture closures can share a latch origin
+    /// without the modifier needing mutable state.
+    final class Box { var value: CGFloat? }
+
     var isEnabled: Bool
+    private let fallbackOrigin = Box()
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
 
@@ -290,11 +309,20 @@ struct StoryDismissGestureModifier: ViewModifier {
                         let dy = abs(value.translation.height)
                         guard dy >= Constant.dismissAxisLockDistance,
                               dy > dx * Constant.dismissAxisLockRatio else { return }
-                        onChanged(value.translation.height)
+                        // Same slop subtraction as the UIKit path: DragGesture's
+                        // minimumDistance means the first value already carries
+                        // 30pt, which would land as a teleport.
+                        let origin = fallbackOrigin.value ?? {
+                            fallbackOrigin.value = value.translation.height
+                            return value.translation.height
+                        }()
+                        onChanged(value.translation.height - origin)
                     }
                     .onEnded { value in
                         guard isEnabled else { return }
-                        onEnded(value.translation.height, value.predictedEndTranslation.height)
+                        let origin = fallbackOrigin.value ?? 0
+                        fallbackOrigin.value = nil
+                        onEnded(value.translation.height - origin, value.predictedEndTranslation.height)
                     }
             )
         }

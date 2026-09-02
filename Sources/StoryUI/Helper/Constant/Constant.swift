@@ -35,6 +35,11 @@ enum Constant {
     /// invisible mid-transition, and it is the correct side to err on here.
     static let holdMovementTolerance: CGFloat = 10_000
 
+    /// How far the finger may move BEFORE a hold engages. UIKit stops applying
+    /// this once the press is recognized, so it blocks swipes from becoming holds
+    /// without ever letting drift release one. Used by the iOS 18+ recognizer.
+    static let holdEngageMovementTolerance: CGFloat = 12
+
     /// A `minimumDuration` no real interaction reaches, which turns the
     /// LongPressGesture into a pure touch-down / touch-up signal: it can only end
     /// by lift, by drifting past `holdMovementTolerance`, or by system
@@ -90,6 +95,10 @@ enum Constant {
     /// lurching straight back into motion under the finger that just let go. Long
     /// enough to read as deliberate, short enough not to feel stuck.
     static let dismissResumeDelay: TimeInterval = 0.8
+
+    /// How long TabView's page animation takes to settle. Work that would be
+    /// visible on the outgoing page is deferred by this much.
+    static let pageChangeSettleDuration: TimeInterval = 0.45
 
     // MARK: Timing
 

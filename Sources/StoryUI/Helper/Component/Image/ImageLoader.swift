@@ -40,18 +40,20 @@ final class ImageLoader: UIView {
 
         guard let imageURL else { return }
 
-        imageView.image = nil
         // stop video if it's playing before image request
         NotificationCenter.default.post(name: .stopVideo, object: nil)
 
-        if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)) {
-            DispatchQueue.main.async { [weak self] in
-                self?.imageView.image =  UIImage(data: cachedResponse.data)
-                imageIsLoaded()
-            }
+        // Cache hit: swap straight across on this run loop turn. Clearing the image
+        // first and filling it a turn later left one blank frame on every advance
+        // between cached images - most visible caught mid page transition.
+        if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)),
+           let cached = UIImage(data: cachedResponse.data) {
+            imageView.image = cached
+            imageIsLoaded()
             return
         }
 
+        imageView.image = nil
         addIndicator()
 
         URLSession.shared.dataTask(

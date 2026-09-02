@@ -113,7 +113,30 @@ private extension PlayerView {
     }
 
     func getVideoLength(videoURL: URL) {
-        duration = AVURLAsset(url: videoURL).duration.seconds
+        // `.duration` blocks the caller while the container is parsed. On the main
+        // thread that is a dropped frame at the start of every video story, right
+        // when a page transition is running. Load it off-thread and report the real
+        // duration when it lands; until then the story runs on the default.
+        let asset = AVURLAsset(url: videoURL)
+        if #available(iOS 16.0, *) {
+            Task { [weak self] in
+                guard let seconds = try? await asset.load(.duration).seconds,
+                      seconds.isFinite, seconds > 0 else { return }
+                await MainActor.run { self?.applyDuration(seconds) }
+            }
+        } else {
+            asset.loadValuesAsynchronously(forKeys: ["duration"]) { [weak self] in
+                let seconds = asset.duration.seconds
+                guard seconds.isFinite, seconds > 0 else { return }
+                DispatchQueue.main.async { self?.applyDuration(seconds) }
+            }
+        }
+    }
+
+    func applyDuration(_ seconds: Double) {
+        guard duration != seconds else { return }
+        duration = seconds
+        mediaState?(state, seconds)
     }
 
     func stopAndRestartVideo() {

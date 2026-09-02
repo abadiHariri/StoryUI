@@ -24,9 +24,9 @@ struct StoryDetailView: View {
     @State var timerProgress: CGFloat = 0
 
     // MARK: Private Properties
-    @ObservedObject private var keyboardManager = KeyboardManager()
+    @StateObject private var keyboardManager = KeyboardManager()
     @State private var state: MediaState = .notStarted
-    @State private var player = AVPlayer()
+    @StateObject private var playerBox = StoryPlayerBox()
     @State private var animate = false
     @State private var startAnimate = false
     @State private var lastAppliedPauseState: Bool = false
@@ -83,6 +83,17 @@ struct StoryDetailView: View {
         }
         .onChange(of: viewModel.currentStoryUser) { newValue in
             NotificationCenter.default.post(name: .stopVideo, object: nil)
+            guard newValue == model.id else {
+                // This is the page being LEFT. It is still on screen for the whole
+                // page animation, so resetting now visibly rewinds it: progress
+                // bars drain and the media branch flips back to story one. Do it
+                // once it is out of sight instead.
+                DispatchQueue.main.asyncAfter(deadline: .now() + Constant.pageChangeSettleDuration) {
+                    guard viewModel.currentStoryUser != model.id else { return }
+                    resetProgress()
+                }
+                return
+            }
             resetProgress()
             playVideo()
         }
@@ -490,11 +501,10 @@ private extension StoryDetailView {
         return model.stories[index]
     }
 
+    var player: AVPlayer { playerBox.player }
+
     func resetAVPlayer() {
-        Task {
-            player.pause()
-        }
-        player = AVPlayer()
+        playerBox.reset()
     }
 
     func pauseVideo() {

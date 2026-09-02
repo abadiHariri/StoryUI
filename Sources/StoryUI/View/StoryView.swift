@@ -30,6 +30,10 @@ public struct StoryView<Footer: View>: View {
     // Drag to dismiss
     @State private var dragOffset: CGFloat = 0
     @State private var isFlyingAway = false
+    @State private var storySize: CGSize = .zero
+    /// A finger is down right now. Distinct from `viewModel.isDragging`, which
+    /// stays true through the snap-back animation after the finger has lifted.
+    @State private var isDragActive = false
 
     /// Stories and isPresented required, selectedIndex is optional default: 0
     /// - Parameters:
@@ -119,24 +123,20 @@ public struct StoryView<Footer: View>: View {
                 .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Measured rather than assumed: UIScreen.main.bounds is the device,
+                // not this view. Any mismatch skews the circle styles (which square
+                // the frame using width/height) and the fly-away distance.
+                // Read before the transforms below, so it stays the layout size.
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { storySize = proxy.size }
+                            .onChange(of: proxy.size) { storySize = $0 }
+                    }
+                )
                 // Story, footer and chrome move as one unit, like the host's
-                // fullscreen image gallery. The modifier set is fixed for every
-                // dismiss style so switching style never changes view identity.
-                .overlay(
-                    Color.black
-                        .opacity(transform.dim)
-                        .allowsHitTesting(false)
-                )
-                .clipShape(StoryRoundnessShape(roundness: transform.roundness))
-                .opacity(transform.opacity)
-                .rotation3DEffect(
-                    transform.tilt,
-                    axis: (x: 1, y: 0, z: 0),
-                    perspective: transform.perspective
-                )
-                .scaleEffect(x: transform.scaleX, y: transform.scaleY)
-                .rotationEffect(transform.rotation)
-                .offset(y: transform.offset)
+                // fullscreen image gallery.
+                .modifier(StoryDismissTransformModifier(style: dismissStyle, transform: transform))
                 .storyDismissGesture(
                     isEnabled: isDragToDismissEnabled && !isFlyingAway,
                     onChanged: dragChanged,
@@ -155,22 +155,33 @@ public struct StoryView<Footer: View>: View {
 
     // MARK: Drag to dismiss
 
-    private var screenSize: CGSize { UIScreen.main.bounds.size }
+    private var effectiveSize: CGSize {
+        storySize.width > 0 && storySize.height > 0 ? storySize : UIScreen.main.bounds.size
+    }
 
     /// One resolved value for the whole drag, so every modifier below reads from a
     /// single source and cannot disagree with the others mid-animation.
     private var transform: StoryDismissStyle.Transform {
-        isFlyingAway
-            ? dismissStyle.committedTransform(offset: dragOffset, size: screenSize)
-            : dismissStyle.transform(offset: dragOffset, size: screenSize)
+        dismissStyle.transform(offset: dragOffset, size: effectiveSize, rubberBand: !isFlyingAway)
     }
 
     private func dragChanged(_ translation: CGFloat) {
         guard !isFlyingAway else { return }
-        if !viewModel.isDragging {
+        if !isDragActive {
+            isDragActive = true
+            // Keyed on the finger, not on `isDragging`: starting a second drag
+            // during the snap-back would otherwise skip this, leaving the pending
+            // unfreeze and resume to fire in the middle of the new drag.
             viewModel.beginDismissDrag()
         }
-        dragOffset = translation
+        // The snap-back spring may still be running. Without this the assignment
+        // inherits that animation and the story eases toward the finger instead of
+        // tracking it, arriving in a catch-up lurch.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            dragOffset = translation
+        }
         // Reported straight to the host, never stored in the observed object: a
         // @Published write here would re-render every StoryDetailView - and every
         // GeometryReader and AVPlayer in them - on every frame of the drag.
@@ -178,6 +189,7 @@ public struct StoryView<Footer: View>: View {
     }
 
     private func dragEnded(_ translation: CGFloat, _ velocity: CGFloat) {
+        isDragActive = false
         guard !isFlyingAway else { return }
 
         let commits = abs(transform.offset) > Constant.dismissCommitDistance
@@ -194,13 +206,20 @@ public struct StoryView<Footer: View>: View {
             return
         }
 
+        // Adopt the current ON-SCREEN position before turning the rubber band off,
+        // so switching to un-banded offsets is continuous rather than a step.
+        let settled = transform.offset
         isFlyingAway = true
+        var adopt = Transaction()
+        adopt.disablesAnimations = true
+        withTransaction(adopt) { dragOffset = settled }
+
         viewModel.commitDismissDrag()
         onDismissProgress?(1)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
 
         withAnimation(.spring(response: 0.15, dampingFraction: 0.85)) {
-            dragOffset = translation < 0 ? -screenSize.height : screenSize.height
+            dragOffset = settled < 0 ? -effectiveSize.height : effectiveSize.height
         }
 
         // body is `if isPresented`, so the fly-away has to finish before the flip

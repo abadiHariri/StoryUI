@@ -69,10 +69,12 @@ extension StoryDismissStyle {
     /// - Parameters:
     ///   - offset: raw vertical drag translation, before rubber banding.
     ///   - size: the story's full size, used to normalise and to square up `.circle`.
-    func transform(offset: CGFloat, size: CGSize) -> Transform {
+    ///   - rubberBand: false once a dismiss has committed, so the story can travel
+    ///     the whole way off screen - the band saturates at `size.height`.
+    func transform(offset: CGFloat, size: CGSize, rubberBand: Bool = true) -> Transform {
         guard offset != 0, size.width > 0, size.height > 0 else { return Transform() }
 
-        let banded = Self.rubberBanded(offset, dimension: size.height)
+        let banded = rubberBand ? Self.rubberBanded(offset, dimension: size.height) : offset
         let distance = abs(banded)
         // 0...1 against the commit threshold, so every style reaches its full
         // effect at exactly the point where letting go would dismiss.
@@ -93,11 +95,11 @@ extension StoryDismissStyle {
             transform.scaleY = transform.scaleX
 
         case let .circle(minScale):
-            // Scaling y by `minScale` and x by `minScale * height/width` lands on a
-            // square, so the inscribed ellipse below renders as a true circle.
-            let aspect = size.height / size.width
-            transform.scaleY = 1 - (1 - minScale) * progress
-            transform.scaleX = 1 - (1 - minScale * aspect) * progress
+            // Uniform scale: the clip does the squaring, so the media keeps its
+            // aspect ratio and is cropped rather than squashed.
+            let scale = 1 - (1 - minScale) * progress
+            transform.scaleX = scale
+            transform.scaleY = scale
             // Rounds ahead of the shrink so it reads as a circle well before the
             // commit point, rather than only at the very end.
             transform.roundness = min(1, progress * Constant.dismissRoundnessLead)
@@ -145,26 +147,14 @@ extension StoryDismissStyle {
             transform.perspective = 0.4
 
         case let .circleFade(minScale):
-            transform.scaleY = 1 - (1 - minScale) * progress
-            transform.scaleX = 1 - (1 - minScale * (size.height / size.width)) * progress
+            let scale = 1 - (1 - minScale) * progress
+            transform.scaleX = scale
+            transform.scaleY = scale
             transform.roundness = min(1, progress * Constant.dismissRoundnessLead)
             transform.opacity = 1 - progress * 0.5
             transform.backdropOpacity = max(0, 1 - progress)
         }
 
-        return transform
-    }
-
-    /// The transform the story settles into once a dismiss has committed.
-    func committedTransform(offset: CGFloat, size: CGSize) -> Transform {
-        var transform = self.transform(offset: offset, size: size)
-        // Straight off the nearest edge, in the direction the finger was going.
-        transform.offset = offset < 0 ? -size.height : size.height
-        transform.backdropOpacity = 0
-        switch self {
-        case .circle, .circleFade: transform.roundness = 1
-        default: break
-        }
         return transform
     }
 
@@ -181,11 +171,136 @@ extension StoryDismissStyle {
     }
 }
 
+// MARK: - Which effects a style actually needs
+
+extension StoryDismissStyle {
+    /// Each of these gates one render effect. `clipShape` and `rotation3DEffect`
+    /// in particular force extra rendering passes over the whole story - a live
+    /// AVPlayer layer and TabView's collection view included - on every frame of a
+    /// drag, even when they are mathematically the identity. Applying only what a
+    /// style uses is the difference between a smooth drag and a dropped frame.
+    ///
+    /// All of these are constant for a given style, so branching on them cannot
+    /// change view identity part-way through a drag.
+
+    var needsRoundness: Bool {
+        switch self {
+        case .circle, .circleFade: return true
+        default: return false
+        }
+    }
+
+    var needsDim: Bool {
+        if case .depth = self { return true }
+        return false
+    }
+
+    var needsTilt: Bool {
+        switch self {
+        case .flip, .stack: return true
+        default: return false
+        }
+    }
+
+    var needsRotation: Bool {
+        if case .card = self { return true }
+        return false
+    }
+
+    var needsOpacity: Bool {
+        switch self {
+        case .fade, .shrink, .circleFade: return true
+        default: return false
+        }
+    }
+}
+
+// MARK: - Applying the transform
+
+struct StoryDismissTransformModifier: ViewModifier {
+    let style: StoryDismissStyle
+    let transform: StoryDismissStyle.Transform
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(DimModifier(isActive: style.needsDim, dim: transform.dim))
+            .modifier(RoundnessModifier(isActive: style.needsRoundness, roundness: transform.roundness))
+            .modifier(OpacityModifier(isActive: style.needsOpacity, opacity: transform.opacity))
+            .modifier(TiltModifier(isActive: style.needsTilt, tilt: transform.tilt, perspective: transform.perspective))
+            // Scale and offset are the core of every style and are cheap enough to
+            // apply unconditionally.
+            .scaleEffect(x: transform.scaleX, y: transform.scaleY)
+            .modifier(RotationModifier(isActive: style.needsRotation, rotation: transform.rotation))
+            .offset(y: transform.offset)
+    }
+
+    private struct DimModifier: ViewModifier {
+        let isActive: Bool
+        let dim: CGFloat
+        func body(content: Content) -> some View {
+            if isActive {
+                content.overlay(Color.black.opacity(dim).allowsHitTesting(false))
+            } else {
+                content
+            }
+        }
+    }
+
+    private struct RoundnessModifier: ViewModifier {
+        let isActive: Bool
+        let roundness: CGFloat
+        func body(content: Content) -> some View {
+            if isActive {
+                content
+                    // Inside the clip, so it becomes the disc itself. Without it,
+                    // `.fit` media leaves transparent letterbox bars and the
+                    // clipped edge has nothing to show against.
+                    .background(Color.black)
+                    .clipShape(StoryRoundnessShape(roundness: roundness))
+            } else {
+                content
+            }
+        }
+    }
+
+    private struct OpacityModifier: ViewModifier {
+        let isActive: Bool
+        let opacity: CGFloat
+        func body(content: Content) -> some View {
+            if isActive { content.opacity(opacity) } else { content }
+        }
+    }
+
+    private struct TiltModifier: ViewModifier {
+        let isActive: Bool
+        let tilt: Angle
+        let perspective: CGFloat
+        func body(content: Content) -> some View {
+            if isActive {
+                content.rotation3DEffect(tilt, axis: (x: 1, y: 0, z: 0), perspective: perspective)
+            } else {
+                content
+            }
+        }
+    }
+
+    private struct RotationModifier: ViewModifier {
+        let isActive: Bool
+        let rotation: Angle
+        func body(content: Content) -> some View {
+            if isActive { content.rotationEffect(rotation) } else { content }
+        }
+    }
+}
+
 // MARK: - Rect to ellipse
 
-/// Morphs a rectangle into the ellipse inscribed in it. `Path(roundedRect:cornerSize:)`
-/// with corners of half the width and height *is* that ellipse, so the whole morph is
-/// one interpolation with no special cases at either end.
+/// Morphs the full rectangle into the largest circle that fits inside it, centred.
+///
+/// Interpolating the corner radius alone is not enough on a tall frame: the ellipse
+/// inscribed in a full-screen rect is wider than the media at its centre, so it
+/// clips nothing visible. This shrinks the rect toward a centred square as it
+/// rounds, so the clip actually bites and ends as a real circle.
 struct StoryRoundnessShape: Shape {
     var roundness: CGFloat
 
@@ -196,13 +311,16 @@ struct StoryRoundnessShape: Shape {
 
     func path(in rect: CGRect) -> Path {
         guard roundness > 0 else { return Path(rect) }
-        let clamped = min(1, roundness)
-        return Path(
-            roundedRect: rect,
-            cornerSize: CGSize(
-                width: rect.width / 2 * clamped,
-                height: rect.height / 2 * clamped
-            )
+        let t = min(1, roundness)
+        let side = min(rect.width, rect.height)
+        let width = rect.width + (side - rect.width) * t
+        let height = rect.height + (side - rect.height) * t
+        let box = CGRect(
+            x: rect.midX - width / 2,
+            y: rect.midY - height / 2,
+            width: width,
+            height: height
         )
+        return Path(roundedRect: box, cornerRadius: min(width, height) / 2 * t)
     }
 }
