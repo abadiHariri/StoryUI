@@ -33,8 +33,8 @@ final class PlayerView: UIView {
     override init(frame: CGRect) {
         self.cacheManager = StoryVideoCacheManager()
         super.init(frame: frame)
-        self.layer.cornerRadius = 12
-        self.clipsToBounds = true
+        // See ImageLoader: an offscreen pass per frame for corners that are off
+        // screen. The dismiss clip supplies any rounding that is actually visible.
         setupPlayer()
     }
 

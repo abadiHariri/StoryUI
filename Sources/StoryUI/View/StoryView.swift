@@ -127,13 +127,17 @@ public struct StoryView<Footer: View>: View {
                 .modifier(StoryDismissTransformModifier(style: dismissStyle, transform: transform))
                 .storyDismissGesture(
                     isEnabled: isDragToDismissEnabled && !isFlyingAway,
-                    onActiveChanged: viewModel.setTouchActive,
+                    onActiveChanged: touchActiveChanged,
                     onChanged: dragChanged,
                     onEnded: dragEnded
                 )
             }
             .ignoresSafeArea()
             .onAppear() {
+                // Nothing may survive a presentation at a non-zero offset.
+                dragOffset = 0
+                isDragActive = false
+                isFlyingAway = false
                 startStory()
             }
             .onDisappear() {
@@ -150,6 +154,27 @@ public struct StoryView<Footer: View>: View {
     /// single source and cannot disagree with the others mid-animation.
     private var transform: StoryDismissStyle.Transform {
         dismissStyle.transform(offset: dragOffset, size: effectiveSize, rubberBand: !isFlyingAway)
+    }
+
+    /// The pan can stop without ever delivering `.ended` to our handler - our own
+    /// recognizer being disabled mid-drag does exactly that. When it happened,
+    /// `dragOffset` was left stranded at whatever it had reached, so the story sat
+    /// permanently shifted and permanently scaled: the progress bar ended up above
+    /// the safe area, and every later frame kept paying for a non-identity
+    /// transform. This is the safety net that guarantees it always returns to rest.
+    private func touchActiveChanged(_ active: Bool) {
+        viewModel.setTouchActive(active)
+        guard !active, !isFlyingAway, dragOffset != 0 else { return }
+        settleDrag()
+    }
+
+    private func settleDrag() {
+        isDragActive = false
+        withAnimation(.spring(response: Constant.dismissSnapBackDuration, dampingFraction: 0.85)) {
+            dragOffset = 0
+        }
+        onDismissProgress?(0)
+        viewModel.cancelDismissDrag()
     }
 
     private func dragChanged(_ translation: CGFloat) {
@@ -183,13 +208,9 @@ public struct StoryView<Footer: View>: View {
             || abs(velocity) > Constant.dismissCommitVelocity
 
         guard commits else {
-            withAnimation(.spring(response: Constant.dismissSnapBackDuration, dampingFraction: 0.85)) {
-                dragOffset = 0
-            }
-            onDismissProgress?(0)
             // Unfreezes page transitions once the spring settles, and resumes the
             // story a few seconds later rather than the instant the finger lifts.
-            viewModel.cancelDismissDrag()
+            settleDrag()
             return
         }
 

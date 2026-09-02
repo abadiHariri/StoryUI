@@ -141,8 +141,11 @@ private extension ImageLoader {
 private extension ImageLoader {
    func setupImageView() {
        addSubview(imageView)
-       imageView.layer.cornerRadius = 12
-       imageView.clipsToBounds = true
+       // No cornerRadius/clipsToBounds here on purpose. A rounded, clipped layer
+       // is composited through an offscreen pass on every frame that an ancestor
+       // transform animates - a swipe or a dismiss drag - and on a fullscreen
+       // story the corners are off screen anyway. Rounding during a dismiss comes
+       // from the clip in StoryDismissTransformModifier instead.
        imageView.contentMode = .scaleAspectFit
        // Once, in init. This used to run from layoutSubviews, which re-activated
        // four fresh constraints on every single layout pass - so they accumulated
