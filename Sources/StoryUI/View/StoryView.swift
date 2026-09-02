@@ -303,7 +303,7 @@ public extension StoryView where Footer == EmptyView {
     }
 }
 
-public extension View {
+fileprivate extension View {
 
    
     
