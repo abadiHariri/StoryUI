@@ -121,11 +121,21 @@ extension ImageLoader {
 extension ImageLoader {
 
     private func addIndicator() {
-        activityIndicator.color = UIColor.lightGray.withAlphaComponent(0.7)
-        addSubview(activityIndicator)
-        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-        activityIndicator.centerXAnchor.constraint(equalTo: centerXAnchor).isActive = true
-        activityIndicator.centerYAnchor.constraint(equalTo: centerYAnchor).isActive = true
+        installIndicatorIfNeeded()
         activityIndicator.startAnimating()
+    }
+
+    /// Constraints installed exactly once. This used to add two fresh constraints
+    /// to the same indicator on every cache miss, so they piled up across story
+    /// changes and the resulting layout churn showed as judder.
+    private func installIndicatorIfNeeded() {
+        guard activityIndicator.superview == nil else { return }
+        activityIndicator.color = UIColor.lightGray.withAlphaComponent(0.7)
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(activityIndicator)
+        NSLayoutConstraint.activate([
+            activityIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
     }
 }

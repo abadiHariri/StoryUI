@@ -496,6 +496,10 @@ private extension StoryDetailView {
     }
 
     func resetAVPlayer() {
+        // Nothing to tear down on an image-only story, and the assignment below is
+        // a @State write that re-renders the whole page. Skipping it entirely when
+        // no media is loaded takes that cost off every image appearance.
+        guard player.currentItem != nil else { return }
         Task {
             player.pause()
         }
