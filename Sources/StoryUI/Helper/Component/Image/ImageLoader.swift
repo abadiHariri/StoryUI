@@ -7,6 +7,7 @@
 
 import Combine
 import UIKit
+import ImageIO
 
 final class ImageLoader: UIView {
     
@@ -43,13 +44,12 @@ final class ImageLoader: UIView {
         // stop video if it's playing before image request
         NotificationCenter.default.post(name: .stopVideo, object: nil)
 
-        // Cache hit: decode off the main thread, and leave the CURRENT image in
-        // place until the new one is ready. Blanking first is what left an empty
-        // frame on every advance between cached images; decoding synchronously to
-        // avoid that just moved the cost into SwiftUI's update pass instead.
+        // Cache hit. The disk read, the decode and the downsample all happen off
+        // the main thread, and the CURRENT image stays on screen until the new one
+        // is ready, so there is no blank frame either.
         if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)) {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let image = UIImage(data: cachedResponse.data)
+            Self.decodeQueue.async { [weak self] in
+                let image = Self.downsampledImage(from: cachedResponse.data)
                 DispatchQueue.main.async {
                     guard let self, self.imageURL == imageURL else { return }
                     self.imageView.image = image
@@ -71,17 +71,17 @@ final class ImageLoader: UIView {
                 return
             }
 
-            guard let data,
-                  let response,
-                  let image = UIImage(data: data)
-            else { return }
+            guard let data, let response else { return }
 
             URLCache.shared.storeCachedResponse(
                 .init(response: response, data: data),
                 for: .init( url: imageURL)
             )
 
+            let image = Self.downsampledImage(from: data)
+
             DispatchQueue.main.async {
+                guard self.imageURL == imageURL else { return }
                 self.imageView.image = image
                 imageIsLoaded()
                 self.activityIndicator.stopAnimating()
@@ -89,6 +89,53 @@ final class ImageLoader: UIView {
         }).resume()
     }
 
+}
+
+// MARK: - Decoding
+
+private extension ImageLoader {
+
+    static let decodeQueue = DispatchQueue(
+        label: "StoryUI.ImageDecode",
+        qos: .userInitiated
+    )
+
+    /// Longest edge to keep, in pixels. A story fills the screen, so anything
+    /// beyond this is invisible detail that still costs memory and bandwidth on
+    /// every composite.
+    static var maxPixelSize: CGFloat {
+        let bounds = UIScreen.main.bounds
+        return max(bounds.width, bounds.height) * UIScreen.main.scale
+    }
+
+    /// Decodes and downsamples in one step, off the main thread.
+    ///
+    /// `UIImage(data:)` keeps the image at full source resolution and defers the
+    /// decode until the first draw - which lands on the MAIN thread, inside a
+    /// gesture. A 12MP camera photo is ~48MB decoded, and every frame that
+    /// composites it through a transform or a clip mask pays for that size. This
+    /// is the single largest cost in the whole story path.
+    ///
+    /// `kCGImageSourceShouldCacheImmediately` forces the decode to happen here,
+    /// on this background queue, so the first draw is already a plain blit.
+    static func downsampledImage(from data: Data) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return UIImage(data: data)
+        }
+
+        let options = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ] as [CFString: Any] as CFDictionary
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: thumbnail)
+    }
 }
 // MARK: - Private Funcs
 private extension ImageLoader {
