@@ -76,9 +76,9 @@ extension StoryDismissStyle {
 
         let banded = rubberBand ? Self.rubberBanded(offset, dimension: size.height) : offset
         let distance = abs(banded)
-        // 0...1 against the commit threshold, so every style reaches its full
-        // effect at exactly the point where letting go would dismiss.
-        let progress = min(1, distance / Constant.dismissCommitDistance)
+        // Paced by its own constant rather than the commit threshold, so the
+        // dismiss can trigger early without the visuals racing to keep up.
+        let progress = min(1, distance / Constant.dismissProgressDistance)
 
         var transform = Transform()
         transform.offset = banded

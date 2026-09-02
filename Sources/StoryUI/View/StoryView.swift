@@ -127,6 +127,7 @@ public struct StoryView<Footer: View>: View {
                 .modifier(StoryDismissTransformModifier(style: dismissStyle, transform: transform))
                 .storyDismissGesture(
                     isEnabled: isDragToDismissEnabled && !isFlyingAway,
+                    onActiveChanged: viewModel.setTouchActive,
                     onChanged: dragChanged,
                     onEnded: dragEnded
                 )

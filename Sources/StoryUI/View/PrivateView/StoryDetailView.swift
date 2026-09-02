@@ -285,7 +285,7 @@ private extension StoryDetailView {
     /// else - that is what makes releasing a hold unable to resume a story the
     /// host is holding paused.
     var effectivePaused: Bool {
-        isPaused || isHolding || viewModel.isPausedByDrag
+        isPaused || isHolding || viewModel.isPausedByDrag || viewModel.isTouchActive
     }
 
     /// iOS 18+ drives the hold from a UILongPressGestureRecognizer, which applies

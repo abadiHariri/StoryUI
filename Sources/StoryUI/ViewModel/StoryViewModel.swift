@@ -31,6 +31,24 @@ final class StoryViewModel: ObservableObject {
     /// a cancelled one so the story does not snap straight back into motion.
     @Published var isPausedByDrag: Bool = false
 
+    /// A finger is driving a pan right now, on EITHER axis - so this covers page
+    /// swipes as well as dismiss drags.
+    ///
+    /// Until the hold recognizer's allowableMovement was tightened to 12pt, this
+    /// came for free and nobody noticed: at 10_000pt every swipe longer than 0.3s
+    /// also engaged a hold, which froze the story machine for the swipe's whole
+    /// duration. Tightening it removed the chrome flicker AND, silently, that
+    /// pause - leaving the 0.1s timer writing @State ten times a second, and
+    /// invalidating the whole page body, underneath a 120Hz scroll.
+    @Published private(set) var isTouchActive: Bool = false
+
+    /// @Published fires on every assignment, so this equality guard is what keeps
+    /// the cost at two writes per gesture rather than one per frame.
+    func setTouchActive(_ active: Bool) {
+        guard active != isTouchActive else { return }
+        isTouchActive = active
+    }
+
     /// True while the current story is held. Hides host chrome.
     @Published var isHolding: Bool = false
 

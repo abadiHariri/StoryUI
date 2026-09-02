@@ -210,6 +210,7 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
     }
 
     var isEnabled: Bool
+    var onActiveChanged: (Bool) -> Void
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
 
@@ -226,10 +227,17 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
     }
 
     func updateUIGestureRecognizer(_ recognizer: UIPanGestureRecognizer, context: Context) {
-        recognizer.isEnabled = isEnabled
+        // Assigning unconditionally re-touches the recognizer on every SwiftUI
+        // update, which during a drag is every frame.
+        if recognizer.isEnabled != isEnabled { recognizer.isEnabled = isEnabled }
         // Disabling our own recognizer cancels it without necessarily delivering a
-        // state change, so release paging here too rather than relying on it.
-        if !isEnabled { context.coordinator.finish() }
+        // state change, so clear the latch and the pause here rather than waiting
+        // for one. Deferred because this runs inside a SwiftUI update pass.
+        if !isEnabled {
+            context.coordinator.finish()
+            let notify = onActiveChanged
+            DispatchQueue.main.async { notify(false) }
+        }
     }
 
     func handleUIGestureRecognizerAction(
@@ -240,9 +248,13 @@ struct StoryDismissGesture: UIGestureRecognizerRepresentable {
 
         switch recognizer.state {
         case .began, .changed:
+            // Before the axis check on purpose: a horizontal page swipe must pause
+            // the story too, and it never reaches shouldDrag's vertical branch.
+            onActiveChanged(true)
             guard context.coordinator.shouldDrag(translation: translation) else { return }
             onChanged(translation.y - context.coordinator.latchTranslation.y)
         case .ended, .cancelled, .failed:
+            onActiveChanged(false)
             let wasDismissing = context.coordinator.isDismissing
             // Read before finish() clears the latch.
             let offset = translation.y - context.coordinator.latchTranslation.y
@@ -292,19 +304,26 @@ struct StoryDismissGestureModifier: ViewModifier {
 
     var isEnabled: Bool
     private let fallbackOrigin = Box()
+    var onActiveChanged: (Bool) -> Void
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
 
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.gesture(
-                StoryDismissGesture(isEnabled: isEnabled, onChanged: onChanged, onEnded: onEnded)
+                StoryDismissGesture(
+                    isEnabled: isEnabled,
+                    onActiveChanged: onActiveChanged,
+                    onChanged: onChanged,
+                    onEnded: onEnded
+                )
             )
         } else {
             content.simultaneousGesture(
                 DragGesture(minimumDistance: Constant.dismissFallbackMinimumDistance)
                     .onChanged { value in
                         guard isEnabled else { return }
+                        onActiveChanged(true)
                         let dx = abs(value.translation.width)
                         let dy = abs(value.translation.height)
                         guard dy >= Constant.dismissAxisLockDistance,
@@ -319,6 +338,7 @@ struct StoryDismissGestureModifier: ViewModifier {
                         onChanged(value.translation.height - origin)
                     }
                     .onEnded { value in
+                        onActiveChanged(false)
                         guard isEnabled else { return }
                         let origin = fallbackOrigin.value ?? 0
                         fallbackOrigin.value = nil
@@ -346,9 +366,17 @@ extension View {
 
     func storyDismissGesture(
         isEnabled: Bool,
+        onActiveChanged: @escaping (Bool) -> Void,
         onChanged: @escaping (CGFloat) -> Void,
         onEnded: @escaping (CGFloat, CGFloat) -> Void
     ) -> some View {
-        modifier(StoryDismissGestureModifier(isEnabled: isEnabled, onChanged: onChanged, onEnded: onEnded))
+        modifier(
+            StoryDismissGestureModifier(
+                isEnabled: isEnabled,
+                onActiveChanged: onActiveChanged,
+                onChanged: onChanged,
+                onEnded: onEnded
+            )
+        )
     }
 }

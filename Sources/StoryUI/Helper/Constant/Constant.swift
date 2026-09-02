@@ -53,6 +53,12 @@ enum Constant {
     /// Past this many points of vertical drag, letting go dismisses.
     static let dismissCommitDistance: CGFloat = 70
 
+    /// How far the drag travels before a style reaches its full effect. Separate
+    /// from the commit threshold on purpose: one constant used to do both jobs, so
+    /// shortening the threshold to 70 also made the circle complete in ~44pt of
+    /// travel, which reads as a snap rather than a drag.
+    static let dismissProgressDistance: CGFloat = 150
+
     /// A flick this fast dismisses even if it never travelled `dismissCommitDistance`.
     static let dismissCommitVelocity: CGFloat = 550
 
