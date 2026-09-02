@@ -51,7 +51,7 @@ enum Constant {
     // MARK: Drag to dismiss
 
     /// Past this many points of vertical drag, letting go dismisses.
-    static let dismissCommitDistance: CGFloat = 70
+    static let dismissCommitDistance: CGFloat = 40
 
     /// How far the drag travels before a style reaches its full effect. Separate
     /// from the commit threshold on purpose: one constant used to do both jobs, so
@@ -60,7 +60,7 @@ enum Constant {
     static let dismissProgressDistance: CGFloat = 150
 
     /// A flick this fast dismisses even if it never travelled `dismissCommitDistance`.
-    static let dismissCommitVelocity: CGFloat = 550
+    static let dismissCommitVelocity: CGFloat = 380
 
     /// The story shrinks by distance/700 and the backdrop fades by distance/400,
     /// matching the host app's fullscreen image gallery exactly.
