@@ -48,7 +48,13 @@ public struct StoryView<Footer: View>: View {
     ///   - imageContentMode: how images are scaled into the frame; per-story override via `StoryConfiguration`
     ///   - videoContentMode: how video is scaled into the frame; per-story override via `StoryConfiguration`
     ///   - onDismissProgress: 0...1 as the story is dragged away, for hosts that fade their own chrome
-    ///   - onDismiss: called once a dismiss drag commits, after the fly-away animation
+    ///   - onDismiss: called on EVERY path that closes the story - a committed dismiss
+    ///     drag, the close button, and running past the last story - and always BEFORE
+    ///     `isPresented` flips. A host that presents this view itself should tear its
+    ///     presentation down here rather than by observing `isPresented`: `body` is
+    ///     `if isPresented`, so the flip removes this subtree, and an `onChange` edge on
+    ///     the binding can be coalesced away when the main thread is loaded - leaving the
+    ///     presentation mounted with nothing left to remove it.
     ///   - footer: host-supplied overlay rendered at the bottom of the currently visible story
     public init(
         stories: [StoryUIModel],
@@ -102,7 +108,8 @@ public struct StoryView<Footer: View>: View {
                                 transitionStyle: transitionStyle,
                                 imageDuration: imageDuration,
                                 imageContentMode: imageContentMode,
-                                videoContentMode: videoContentMode
+                                videoContentMode: videoContentMode,
+                                onDismiss: onDismiss
                             )
                             .addGeometryGroup()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -245,8 +252,7 @@ public struct StoryView<Footer: View>: View {
         // - otherwise the story vanishes instead of leaving.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             stopVideo()
-            onDismiss?()
-            isPresented = false
+            requestDismiss()
         }
     }
 
@@ -263,6 +269,14 @@ public struct StoryView<Footer: View>: View {
         if !storyUser.stories.isEmpty {
             viewModel.stories[index].isSeen = true
         }
+    }
+
+    /// The single exit. Every path that closes the story - this one, the close button
+    /// and running past the last story - goes through here, so the host is told before
+    /// the binding flips and can remove its own presentation directly.
+    private func requestDismiss() {
+        onDismiss?()
+        isPresented = false
     }
 
     private func stopVideo() {

@@ -19,6 +19,9 @@ struct StoryDetailView: View {
     var imageDuration: TimeInterval = Constant.storySecond
     var imageContentMode: StoryContentMode = .fit
     var videoContentMode: StoryContentMode = .fill
+    /// Reported before `isPresented` flips, on every path that closes the story.
+    /// See `StoryView.onDismiss`.
+    var onDismiss: (() -> Void)? = nil
 
     @State var timer = Timer.publish(every: Constant.timerTick, on: .main, in: .common).autoconnect()
     @State var timerProgress: CGFloat = 0
@@ -207,7 +210,7 @@ private extension StoryDetailView {
         HStack {
             Spacer()
             Button {
-                isPresented.toggle()
+                requestDismiss()
             } label: {
                 Image(systemName: "xmark")
                     .renderingMode(.template)
@@ -482,8 +485,16 @@ private extension StoryDetailView {
         timerProgress += CGFloat(min(elapsed, Constant.maxTickInterval) / duration)
     }
 
-    func dissmis() {
+    /// The single exit for this view. `StoryView.body` is `if isPresented`, so the flip
+    /// removes the whole story; telling the host first lets it drop its own presentation
+    /// rather than having to catch the binding's edge. See `StoryView.onDismiss`.
+    func requestDismiss() {
+        onDismiss?()
         isPresented = false
+    }
+
+    func dissmis() {
+        requestDismiss()
         NotificationCenter.default.post(name: .replaceCurrentItem, object: nil)
     }
 
