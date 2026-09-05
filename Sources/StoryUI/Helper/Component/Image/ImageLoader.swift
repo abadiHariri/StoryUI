@@ -15,7 +15,12 @@ final class ImageLoader: UIView {
     var imageURL: URL?
     var imageView = UIImageView()
     let activityIndicator = UIActivityIndicatorView(style: .medium)
-    
+
+    /// The download in flight, so it can be cancelled when this view goes away.
+    /// Without it a dismissed story keeps N requests running to completion, each
+    /// still holding its completion handler's captures.
+    private var task: URLSessionDataTask?
+
      // MARK: - Initializers
     init() {
         super.init(frame: .zero)
@@ -24,6 +29,21 @@ final class ImageLoader: UIView {
     
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        task?.cancel()
+    }
+
+    /// Drops the decoded bitmap and any in-flight download at the moment SwiftUI
+    /// removes the page, rather than whenever the last reference happens to go.
+    /// A fullscreen story bitmap is 5-23 MB.
+    func releaseImage() {
+        task?.cancel()
+        task = nil
+        imageURL = nil
+        imageView.image = nil
+        activityIndicator.stopAnimating()
     }
     
     func loadImageWithUrl(_ url: String?, imageIsLoaded: @escaping () -> Void) {
@@ -44,25 +64,49 @@ final class ImageLoader: UIView {
         // stop video if it's playing before image request
         NotificationCenter.default.post(name: .stopVideo, object: nil)
 
-        // Cache hit. The disk read, the decode and the downsample all happen off
-        // the main thread, and the CURRENT image stays on screen until the new one
+        // Read HERE, on the main thread, and pass them down. `UIScreen` and `UIView`
+        // state are main-thread-only, and the decode below runs on `decodeQueue` or on
+        // URLSession's delegate thread. `updateUIView` calls `apply(_:)` before this,
+        // so `imageView.contentMode` is already current.
+        let pixelBox = Self.screenPixelBox
+        let mode = imageView.contentMode
+
+        task?.cancel()
+
+        // The whole cache lookup is off the main thread: `cachedResponse(for:)` is a
+        // synchronous disk-backed read and this runs from `updateUIView`, i.e. inside
+        // a SwiftUI update pass. The CURRENT image stays on screen until the new one
         // is ready, so there is no blank frame either.
-        if let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)) {
-            Self.decodeQueue.async { [weak self] in
-                let image = Self.downsampledImage(from: cachedResponse.data)
+        Self.decodeQueue.async { [weak self] in
+            guard let cachedResponse = URLCache.shared.cachedResponse(for: .init(url: imageURL)) else {
                 DispatchQueue.main.async {
                     guard let self, self.imageURL == imageURL else { return }
-                    self.imageView.image = image
-                    imageIsLoaded()
+                    self.download(imageURL, pixelBox: pixelBox, mode: mode, imageIsLoaded: imageIsLoaded)
                 }
+                return
             }
-            return
+            let image = Self.downsampledImage(from: cachedResponse.data, fitting: pixelBox, mode: mode)
+            DispatchQueue.main.async {
+                guard let self, self.imageURL == imageURL else { return }
+                self.imageView.image = image
+                imageIsLoaded()
+                // Also stopped here: a cache hit that followed a miss used to leave
+                // the spinner turning forever behind the image.
+                self.activityIndicator.stopAnimating()
+            }
         }
+    }
 
+    private func download(
+        _ imageURL: URL,
+        pixelBox: CGSize,
+        mode: UIView.ContentMode,
+        imageIsLoaded: @escaping () -> Void
+    ) {
         imageView.image = nil
         addIndicator()
 
-        URLSession.shared.dataTask(
+        let dataTask = URLSession.shared.dataTask(
             with: imageURL,
             completionHandler: { [weak self] (data, response, error) in
             guard let self else { return }
@@ -78,7 +122,7 @@ final class ImageLoader: UIView {
                 for: .init( url: imageURL)
             )
 
-            let image = Self.downsampledImage(from: data)
+            let image = Self.downsampledImage(from: data, fitting: pixelBox, mode: mode)
 
             DispatchQueue.main.async {
                 guard self.imageURL == imageURL else { return }
@@ -86,7 +130,9 @@ final class ImageLoader: UIView {
                 imageIsLoaded()
                 self.activityIndicator.stopAnimating()
             }
-        }).resume()
+        })
+        task = dataTask
+        dataTask.resume()
     }
 
 }
@@ -100,12 +146,52 @@ private extension ImageLoader {
         qos: .userInitiated
     )
 
-    /// Longest edge to keep, in pixels. A story fills the screen, so anything
-    /// beyond this is invisible detail that still costs memory and bandwidth on
-    /// every composite.
-    static var maxPixelSize: CGFloat {
+    /// The screen in pixels. Read on the MAIN thread by the caller and passed in;
+    /// the decode does not run there.
+    static var screenPixelBox: CGSize {
         let bounds = UIScreen.main.bounds
-        return max(bounds.width, bounds.height) * UIScreen.main.scale
+        let scale = UIScreen.main.scale
+        return CGSize(width: bounds.width * scale, height: bounds.height * scale)
+    }
+
+    /// Longest edge to keep, in pixels, for THIS image.
+    ///
+    /// This used to return the screen's longest edge for every image. Because
+    /// `kCGImageSourceThumbnailMaxPixelSize` caps the LONGEST edge, a landscape photo
+    /// was decoded at 2796x2097 (23 MB) though `.scaleAspectFit` can only ever show it
+    /// at 1290x968 (5 MB) - 4.7x waste - and a 3:4 portrait at 2.6x. With
+    /// `kCGImageSourceShouldCacheImmediately` those bytes are materialised and
+    /// non-purgeable, and there is no cache or cap anywhere in this file, so every
+    /// presentation pays for them again.
+    ///
+    /// Only `.scaleAspectFit` is narrowed. `.scaleAspectFill` and `.scaleToFill` cover
+    /// the whole box, so shrinking them to the fit size would upscale them on screen;
+    /// they keep the previous behaviour exactly.
+    static func maxPixelSize(
+        for source: CGImageSource,
+        fitting box: CGSize,
+        mode: UIView.ContentMode
+    ) -> CGFloat {
+        let screenLongestEdge = max(box.width, box.height)
+        guard mode == .scaleAspectFit, box.width > 0, box.height > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let rawWidth = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+              let rawHeight = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue,
+              rawWidth > 0, rawHeight > 0
+        else { return screenLongestEdge }
+
+        // `kCGImageSourceCreateThumbnailWithTransform` applies EXIF orientation, but
+        // pixelWidth/pixelHeight are the PRE-orientation values, so swap them for the
+        // four orientations that rotate a quarter turn.
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        let quarterTurned = (5...8).contains(orientation)
+        let width = CGFloat(quarterTurned ? rawHeight : rawWidth)
+        let height = CGFloat(quarterTurned ? rawWidth : rawHeight)
+
+        // Capped at 1 so a small image is never upscaled into a bigger bitmap, and at
+        // the screen's longest edge so this can only ever shrink.
+        let fit = min(box.width / width, box.height / height, 1)
+        return min(max(width * fit, height * fit).rounded(), screenLongestEdge)
     }
 
     /// Decodes and downsamples in one step, off the main thread.
@@ -118,7 +204,11 @@ private extension ImageLoader {
     ///
     /// `kCGImageSourceShouldCacheImmediately` forces the decode to happen here,
     /// on this background queue, so the first draw is already a plain blit.
-    static func downsampledImage(from data: Data) -> UIImage? {
+    static func downsampledImage(
+        from data: Data,
+        fitting box: CGSize,
+        mode: UIView.ContentMode
+    ) -> UIImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
             return UIImage(data: data)
@@ -128,7 +218,7 @@ private extension ImageLoader {
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize(for: source, fitting: box, mode: mode),
         ] as [CFString: Any] as CFDictionary
 
         guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options) else {

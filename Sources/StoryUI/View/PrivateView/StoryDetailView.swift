@@ -8,6 +8,27 @@
 import SwiftUI
 import AVKit
 
+/// Per-page state that must be built ONCE per realised page, not once per
+/// `StoryDetailView.init`.
+///
+/// `State.init(wrappedValue:)` takes a plain value, so `@State var player = AVPlayer()`
+/// constructed a real `AVPlayer` inside every single `StoryDetailView.init` - and
+/// `StoryView.body` re-runs on every frame of a dismiss drag (it reads `dragOffset`),
+/// rebuilding the whole `ForEach` because `TabView` is not lazy. At ~100 bundles that
+/// is ~100 AVPlayer allocations *per frame*, every one discarded, even on an
+/// image-only story that never reaches the `.video` branch. `StateObject`'s
+/// initializer IS `@autoclosure`, so everything here is built exactly once.
+final class StoryPlayerBox: ObservableObject {
+    @Published private(set) var player = AVPlayer()
+
+    /// Same trap: two publisher allocations per init, per element, per frame.
+    /// An unconnected `TimerPublisher` schedules nothing, so this leaked no timers -
+    /// it was pure allocation churn under the drag.
+    let timer = Timer.publish(every: Constant.timerTick, on: .main, in: .common).autoconnect()
+
+    func reset() { player = AVPlayer() }
+}
+
 struct StoryDetailView: View {
     // MARK: Public Properties
     @ObservedObject var viewModel: StoryViewModel
@@ -23,13 +44,12 @@ struct StoryDetailView: View {
     /// See `StoryView.onDismiss`.
     var onDismiss: (() -> Void)? = nil
 
-    @State var timer = Timer.publish(every: Constant.timerTick, on: .main, in: .common).autoconnect()
     @State var timerProgress: CGFloat = 0
 
     // MARK: Private Properties
     @StateObject private var keyboardManager = KeyboardManager()
     @State private var state: MediaState = .notStarted
-    @State private var player = AVPlayer()
+    @StateObject private var playerBox = StoryPlayerBox()
     @State private var animate = false
     @State private var startAnimate = false
     @State private var lastAppliedPauseState: Bool = false
@@ -127,7 +147,7 @@ struct StoryDetailView: View {
             suppressNextTap = false
             pressStartedAt = nil
         }
-        .onReceive(timer) { _ in
+        .onReceive(playerBox.timer) { _ in
             // Level-triggered, so it is self-healing: if a release edge were ever
             // dropped, the next tick recomputes the hold from `isPressing` alone
             // and clears it within 100ms. Skipped on the UIKit path, where
@@ -169,7 +189,7 @@ private extension StoryDetailView {
             VideoView(
                 videoURL: story.mediaURL,
                 state: $state,
-                player: player,
+                player: playerBox.player,
                 contentMode: resolvedContentMode(for: story)
             ) { media, duration in
                 model.stories[index].duration = duration
@@ -508,17 +528,20 @@ private extension StoryDetailView {
 
     func resetAVPlayer() {
         // Nothing to tear down on an image-only story, and the assignment below is
-        // a @State write that re-renders the whole page. Skipping it entirely when
-        // no media is loaded takes that cost off every image appearance.
-        guard player.currentItem != nil else { return }
+        // a @Published write that re-renders the whole page. Skipping it entirely
+        // when no media is loaded takes that cost off every image appearance.
+        let current = playerBox.player
+        guard current.currentItem != nil else { return }
+        // Captured before the hop: reading the property inside the escaping Task
+        // could see a player that `reset()` has already replaced.
         Task {
-            player.pause()
+            current.pause()
         }
-        player = AVPlayer()
+        playerBox.reset()
     }
 
     func pauseVideo() {
-        player.pause()
+        playerBox.player.pause()
     }
 
     func playVideo() {
@@ -535,9 +558,10 @@ private extension StoryDetailView {
         let isReady = state == .ready || state == .started
 
         if isReady, currentUser, video {
-            player.automaticallyWaitsToMinimizeStalling = false
+            let current = playerBox.player
+            current.automaticallyWaitsToMinimizeStalling = false
             Task {
-                player.play()
+                current.play()
             }
         }
     }

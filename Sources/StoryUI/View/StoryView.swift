@@ -280,8 +280,12 @@ public struct StoryView<Footer: View>: View {
     }
 
     private func stopVideo() {
+        // `NotificationCenter.default.removeObserver(self)` used to follow this.
+        // `self` is a struct, so it was bridged into a fresh `__SwiftValue` box - a
+        // full copy of the view value, `stories` and closures included - to remove a
+        // registration `StoryView` never makes. Observers of this notification are
+        // owned by `PlayerView`, which removes its own.
         NotificationCenter.default.post(name: .stopVideo, object: nil)
-        NotificationCenter.default.removeObserver(self)
     }
 }
 
