@@ -29,11 +29,15 @@ final class StoryPlayerBox: ObservableObject {
     func reset() { player = AVPlayer() }
 }
 
-struct StoryDetailView: View {
+/// Generic over the host's model purely so it can hold the same
+/// `StoryUIModel<Item>` the view model does. Nothing in here reads `Item` -
+/// the media, the runtime state and every timing decision come from
+/// `model.stories`, exactly as before.
+struct StoryDetailView<Item: StoryUIRepresentable>: View {
     // MARK: Public Properties
-    @ObservedObject var viewModel: StoryViewModel
+    @ObservedObject var viewModel: StoryViewModel<Item>
 
-    @State var model: StoryUIModel
+    @State var model: StoryUIModel<Item>
     @Binding var isPresented: Bool
     @Binding var isPaused: Bool
     var transitionStyle: StoryTransitionStyle = .cube()

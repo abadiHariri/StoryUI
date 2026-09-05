@@ -8,16 +8,21 @@
 import SwiftUI
 import AVFoundation
 
-public struct StoryView<Footer: View>: View {
+/// The story viewer, generic over the host's own model.
+///
+/// `Item` is whatever type the host conformed to `StoryUIRepresentable`. It goes
+/// in through `stories` and comes back out through `footer` unchanged - there is
+/// no model to build, nothing to map and nothing to look back up.
+public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
 
-    @StateObject private var viewModel = StoryViewModel()
+    @StateObject private var viewModel = StoryViewModel<Item>()
     @Binding private var isPresented: Bool
     private var isPaused: Binding<Bool>
 
     // Private properties
-    private var stories: [StoryUIModel]
+    private var stories: [Item]
     private var selectedIndex: Int
-    private var footer: (StoryUIModel) -> Footer
+    private var footer: (Item) -> Footer
     private var isDragToDismissEnabled: Bool
     private var transitionStyle: StoryTransitionStyle
     private var dismissStyle: StoryDismissStyle
@@ -33,6 +38,10 @@ public struct StoryView<Footer: View>: View {
     /// A finger is down right now. Distinct from `viewModel.isDragging`, which
     /// stays true through the snap-back animation after the finger has lifted.
     @State private var isDragActive = false
+
+    /// Index into `stories` of the bundle currently on screen. Kept in step with
+    /// `viewModel.currentStoryUser` so the footer lookup is O(1) per render.
+    @State private var currentItemIndex: Int = 0
 
     /// Stories and isPresented required, selectedIndex is optional default: 0
     /// - Parameters:
@@ -57,7 +66,7 @@ public struct StoryView<Footer: View>: View {
     ///     presentation mounted with nothing left to remove it.
     ///   - footer: host-supplied overlay rendered at the bottom of the currently visible story
     public init(
-        stories: [StoryUIModel],
+        stories: [Item],
         selectedIndex: Int = 0,
         isPresented: Binding<Bool>,
         isPaused: Binding<Bool> = .constant(false),
@@ -69,7 +78,7 @@ public struct StoryView<Footer: View>: View {
         videoContentMode: StoryContentMode = .fill,
         onDismissProgress: ((CGFloat) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
-        @ViewBuilder footer: @escaping (StoryUIModel) -> Footer
+        @ViewBuilder footer: @escaping (Item) -> Footer
     ) {
         self.stories = stories
         self.selectedIndex = selectedIndex
@@ -122,8 +131,8 @@ public struct StoryView<Footer: View>: View {
                     
                     VStack {
                         
-                        if let model = viewModel.getStoryModel() {
-                            footer(model)
+                        if let item = currentItem {
+                            footer(item)
                         }
                         
                     }
@@ -157,6 +166,11 @@ public struct StoryView<Footer: View>: View {
                 isDragActive = false
                 isFlyingAway = false
                 startStory()
+            }
+            // Once per page change, so `currentItem` stays an index lookup during
+            // the drag rather than a scan of the host's array on every frame.
+            .onChange(of: viewModel.currentStoryUser) { _ in
+                updateCurrentItemIndex()
             }
             .onDisappear() {
                 stopVideo()
@@ -256,19 +270,60 @@ public struct StoryView<Footer: View>: View {
         }
     }
 
-    private func startStory() {
-        guard !stories.isEmpty else { return }
-
-        viewModel.stories = stories
-
-        let index = stories.indices.contains(selectedIndex) ? selectedIndex : .zero
-        let storyUser = stories[index]
-
-        viewModel.currentStoryUser = storyUser.id
-
-        if !storyUser.stories.isEmpty {
-            viewModel.stories[index].isSeen = true
+    /// The host's own model for the bundle on screen, handed straight back to the
+    /// footer closure - no id lookup on the host's side, no cast.
+    ///
+    /// Read from `stories` - the array the host is passing in RIGHT NOW - rather
+    /// than from the snapshot in `viewModel`, which is built once on appear and
+    /// deliberately never rebuilt (rebuilding it would throw away every bundle's
+    /// runtime state and reset the pager). So when the host's own source of truth
+    /// changes - a like lands, a count updates - the footer re-renders with it.
+    ///
+    /// `body` runs on every frame of a dismiss drag, so the common path is one
+    /// index and one `storyId` read. The scan is only the fallback for when the
+    /// host has reordered the array underneath us.
+    private var currentItem: Item? {
+        if stories.indices.contains(currentItemIndex),
+           stories[currentItemIndex].storyId == viewModel.currentStoryUser {
+            return stories[currentItemIndex]
         }
+        return stories.first { $0.storyId == viewModel.currentStoryUser }
+    }
+
+    /// Resolved once per page change rather than once per render.
+    private func updateCurrentItemIndex() {
+        currentItemIndex = stories.firstIndex { $0.storyId == viewModel.currentStoryUser } ?? 0
+    }
+
+    /// Builds the runtime state for every bundle, exactly once.
+    ///
+    /// This is the only place a `StoryUIModel` is ever created. It pairs each of
+    /// the host's models with the state the viewer mutates while it plays; the
+    /// host's model itself is carried along untouched. `storyId` and `storyMedia`
+    /// are read exactly once per bundle here, so both are free to be computed
+    /// properties that rebuild on access.
+    private func startStory() {
+        let bundles = stories.map { StoryUIModel($0) }
+
+        // A bundle with no media has nothing to show, no duration to run and no
+        // index to clamp to - `getCurrentIndex()` would return -1 and the page
+        // would trap on its first render. Skipping it here is what lets a host
+        // hand over its raw array without pre-filtering it.
+        let playable = bundles.enumerated().filter { !$0.element.stories.isEmpty }
+        guard !playable.isEmpty else { return }
+
+        viewModel.stories = playable.map { $0.element }
+
+        // `selectedIndex` indexes what the HOST passed, so resolve it there first
+        // and then map it across the filter. Landing on the next playable bundle
+        // (rather than on the first) is what keeps the tapped story correct when
+        // an earlier bundle was skipped.
+        let requested = stories.indices.contains(selectedIndex) ? selectedIndex : .zero
+        let index = playable.firstIndex { $0.offset >= requested } ?? playable.count - 1
+
+        viewModel.currentStoryUser = viewModel.stories[index].id
+        viewModel.stories[index].isSeen = true
+        updateCurrentItemIndex()
     }
 
     /// The single exit. Every path that closes the story - this one, the close button
@@ -291,7 +346,7 @@ public struct StoryView<Footer: View>: View {
 
 public extension StoryView where Footer == EmptyView {
     init(
-        stories: [StoryUIModel],
+        stories: [Item],
         selectedIndex: Int = 0,
         isPresented: Binding<Bool>,
         isPaused: Binding<Bool> = .constant(false),
