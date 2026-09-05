@@ -24,4 +24,10 @@ struct ImageView: UIViewRepresentable {
         uiView.apply(contentMode)
         uiView.loadImageWithUrl(imageURL, imageIsLoaded: imageIsLoaded)
     }
+
+    /// Drops the decoded bitmap and cancels the download when SwiftUI removes the
+    /// page, instead of waiting for the last reference to go.
+    static func dismantleUIView(_ uiView: ImageLoader, coordinator: ()) {
+        uiView.releaseImage()
+    }
 }

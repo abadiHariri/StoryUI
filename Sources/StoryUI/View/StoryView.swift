@@ -8,16 +8,21 @@
 import SwiftUI
 import AVFoundation
 
-public struct StoryView<Footer: View>: View {
+/// The story viewer, generic over the host's own model.
+///
+/// `Item` is whatever type the host conformed to `StoryUIRepresentable`. It goes
+/// in through `stories` and comes back out through `footer` unchanged - there is
+/// no model to build, nothing to map and nothing to look back up.
+public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
 
-    @StateObject private var viewModel = StoryViewModel()
+    @StateObject private var viewModel = StoryViewModel<Item>()
     @Binding private var isPresented: Bool
     private var isPaused: Binding<Bool>
 
     // Private properties
-    private var stories: [StoryUIModel]
+    private var stories: [Item]
     private var selectedIndex: Int
-    private var footer: (StoryUIModel) -> Footer
+    private var footer: (Item) -> Footer
     private var isDragToDismissEnabled: Bool
     private var transitionStyle: StoryTransitionStyle
     private var dismissStyle: StoryDismissStyle
@@ -27,12 +32,9 @@ public struct StoryView<Footer: View>: View {
     private var onDismissProgress: ((CGFloat) -> Void)?
     private var onDismiss: (() -> Void)?
 
-    // Drag to dismiss
-    @State private var dragOffset: CGFloat = 0
-    @State private var isFlyingAway = false
-    /// A finger is down right now. Distinct from `viewModel.isDragging`, which
-    /// stays true through the snap-back animation after the finger has lifted.
-    @State private var isDragActive = false
+    /// Index into `stories` of the bundle currently on screen. Kept in step with
+    /// `viewModel.currentStoryUser` so the footer lookup is O(1) per render.
+    @State private var currentItemIndex: Int = 0
 
     /// Stories and isPresented required, selectedIndex is optional default: 0
     /// - Parameters:
@@ -57,7 +59,7 @@ public struct StoryView<Footer: View>: View {
     ///     presentation mounted with nothing left to remove it.
     ///   - footer: host-supplied overlay rendered at the bottom of the currently visible story
     public init(
-        stories: [StoryUIModel],
+        stories: [Item],
         selectedIndex: Int = 0,
         isPresented: Binding<Bool>,
         isPaused: Binding<Bool> = .constant(false),
@@ -69,7 +71,7 @@ public struct StoryView<Footer: View>: View {
         videoContentMode: StoryContentMode = .fill,
         onDismissProgress: ((CGFloat) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
-        @ViewBuilder footer: @escaping (StoryUIModel) -> Footer
+        @ViewBuilder footer: @escaping (Item) -> Footer
     ) {
         self.stories = stories
         self.selectedIndex = selectedIndex
@@ -88,14 +90,23 @@ public struct StoryView<Footer: View>: View {
 
     public var body: some View {
         if isPresented {
-            ZStack {
-                // Outside the transformed subtree and no longer opaque: as an
-                // opaque child it hid whatever the host painted behind the story,
-                // so a backdrop fade was invisible however the host animated it.
-                Color.black
-                    .opacity(transform.backdropOpacity)
-                    .ignoresSafeArea()
-
+            // Everything that changes with the finger lives in the container, so
+            // this body no longer depends on the drag offset. A drag frame updates
+            // two modifiers in there instead of rebuilding the TabView, the
+            // ForEach over every bundle and the footer, 60-120 times a second.
+            StoryDismissContainer(
+                style: dismissStyle,
+                isDragToDismissEnabled: isDragToDismissEnabled,
+                onTouchActiveChanged: viewModel.setTouchActive,
+                onDragBegan: viewModel.beginDismissDrag,
+                onDragCancelled: viewModel.cancelDismissDrag,
+                onDragCommitted: viewModel.commitDismissDrag,
+                onProgress: onDismissProgress,
+                onDismiss: {
+                    stopVideo()
+                    requestDismiss()
+                }
+            ) {
                 ZStack {
                     
                     TabView(selection: $viewModel.currentStoryUser) {
@@ -122,8 +133,8 @@ public struct StoryView<Footer: View>: View {
                     
                     VStack {
                         
-                        if let model = viewModel.getStoryModel() {
-                            footer(model)
+                        if let item = currentItem {
+                            footer(item)
                         }
                         
                     }
@@ -140,23 +151,15 @@ public struct StoryView<Footer: View>: View {
                 .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                // Story, footer and chrome move as one unit, like the host's
-                // fullscreen image gallery.
-                .modifier(StoryDismissTransformModifier(style: dismissStyle, transform: transform))
-                .storyDismissGesture(
-                    isEnabled: isDragToDismissEnabled && !isFlyingAway,
-                    onActiveChanged: touchActiveChanged,
-                    onChanged: dragChanged,
-                    onEnded: dragEnded
-                )
             }
             .ignoresSafeArea()
             .onAppear() {
-                // Nothing may survive a presentation at a non-zero offset.
-                dragOffset = 0
-                isDragActive = false
-                isFlyingAway = false
                 startStory()
+            }
+            // Once per page change, so `currentItem` stays an index lookup during
+            // the drag rather than a scan of the host's array on every frame.
+            .onChange(of: viewModel.currentStoryUser) { _ in
+                updateCurrentItemIndex()
             }
             .onDisappear() {
                 stopVideo()
@@ -164,111 +167,59 @@ public struct StoryView<Footer: View>: View {
         }
     }
 
-    // MARK: Drag to dismiss
-
-    private var effectiveSize: CGSize { UIScreen.main.bounds.size }
-
-    /// One resolved value for the whole drag, so every modifier below reads from a
-    /// single source and cannot disagree with the others mid-animation.
-    private var transform: StoryDismissStyle.Transform {
-        dismissStyle.transform(offset: dragOffset, size: effectiveSize, rubberBand: !isFlyingAway)
+    /// The host's own model for the bundle on screen, handed straight back to the
+    /// footer closure - no id lookup on the host's side, no cast.
+    ///
+    /// Read from `stories` - the array the host is passing in RIGHT NOW - rather
+    /// than from the snapshot in `viewModel`, which is built once on appear and
+    /// deliberately never rebuilt (rebuilding it would throw away every bundle's
+    /// runtime state and reset the pager). So when the host's own source of truth
+    /// changes - a like lands, a count updates - the footer re-renders with it.
+    ///
+    /// The common path is one index and one `storyId` read. The scan is only the
+    /// fallback for when the host has reordered the array underneath us.
+    private var currentItem: Item? {
+        if stories.indices.contains(currentItemIndex),
+           stories[currentItemIndex].storyId == viewModel.currentStoryUser {
+            return stories[currentItemIndex]
+        }
+        return stories.first { $0.storyId == viewModel.currentStoryUser }
     }
 
-    /// The pan can stop without ever delivering `.ended` to our handler - our own
-    /// recognizer being disabled mid-drag does exactly that. When it happened,
-    /// `dragOffset` was left stranded at whatever it had reached, so the story sat
-    /// permanently shifted and permanently scaled: the progress bar ended up above
-    /// the safe area, and every later frame kept paying for a non-identity
-    /// transform. This is the safety net that guarantees it always returns to rest.
-    private func touchActiveChanged(_ active: Bool) {
-        viewModel.setTouchActive(active)
-        guard !active, !isFlyingAway, dragOffset != 0 else { return }
-        settleDrag()
+    /// Resolved once per page change rather than once per render.
+    private func updateCurrentItemIndex() {
+        currentItemIndex = stories.firstIndex { $0.storyId == viewModel.currentStoryUser } ?? 0
     }
 
-    private func settleDrag() {
-        isDragActive = false
-        withAnimation(.spring(response: Constant.dismissSnapBackDuration, dampingFraction: 0.85)) {
-            dragOffset = 0
-        }
-        onDismissProgress?(0)
-        viewModel.cancelDismissDrag()
-    }
-
-    private func dragChanged(_ translation: CGFloat) {
-        guard !isFlyingAway else { return }
-        if !isDragActive {
-            isDragActive = true
-            // Keyed on the finger, not on `isDragging`: starting a second drag
-            // during the snap-back would otherwise skip this, leaving the pending
-            // unfreeze and resume to fire in the middle of the new drag.
-            viewModel.beginDismissDrag()
-        }
-        // The snap-back spring may still be running. Without this the assignment
-        // inherits that animation and the story eases toward the finger instead of
-        // tracking it, arriving in a catch-up lurch.
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            dragOffset = translation
-        }
-        // Reported straight to the host, never stored in the observed object: a
-        // @Published write here would re-render every StoryDetailView - and every
-        // GeometryReader and AVPlayer in them - on every frame of the drag.
-        onDismissProgress?(min(1, abs(transform.offset) / Constant.dismissCommitDistance))
-    }
-
-    private func dragEnded(_ translation: CGFloat, _ velocity: CGFloat) {
-        isDragActive = false
-        guard !isFlyingAway else { return }
-
-        let commits = abs(transform.offset) > Constant.dismissCommitDistance
-            || abs(velocity) > Constant.dismissCommitVelocity
-
-        guard commits else {
-            // Unfreezes page transitions once the spring settles, and resumes the
-            // story a few seconds later rather than the instant the finger lifts.
-            settleDrag()
-            return
-        }
-
-        // Adopt the current ON-SCREEN position before turning the rubber band off,
-        // so switching to un-banded offsets is continuous rather than a step.
-        let settled = transform.offset
-        isFlyingAway = true
-        var adopt = Transaction()
-        adopt.disablesAnimations = true
-        withTransaction(adopt) { dragOffset = settled }
-
-        viewModel.commitDismissDrag()
-        onDismissProgress?(1)
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-
-        withAnimation(.spring(response: 0.15, dampingFraction: 0.85)) {
-            dragOffset = settled < 0 ? -effectiveSize.height : effectiveSize.height
-        }
-
-        // body is `if isPresented`, so the fly-away has to finish before the flip
-        // - otherwise the story vanishes instead of leaving.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            stopVideo()
-            requestDismiss()
-        }
-    }
-
+    /// Builds the runtime state for every bundle, exactly once.
+    ///
+    /// This is the only place a `StoryUIModel` is ever created. It pairs each of
+    /// the host's models with the state the viewer mutates while it plays; the
+    /// host's model itself is carried along untouched. `storyId` and `storyMedia`
+    /// are read exactly once per bundle here, so both are free to be computed
+    /// properties that rebuild on access.
     private func startStory() {
-        guard !stories.isEmpty else { return }
+        let bundles = stories.map { StoryUIModel($0) }
 
-        viewModel.stories = stories
+        // A bundle with no media has nothing to show, no duration to run and no
+        // index to clamp to - `getCurrentIndex()` would return -1 and the page
+        // would trap on its first render. Skipping it here is what lets a host
+        // hand over its raw array without pre-filtering it.
+        let playable = bundles.enumerated().filter { !$0.element.stories.isEmpty }
+        guard !playable.isEmpty else { return }
 
-        let index = stories.indices.contains(selectedIndex) ? selectedIndex : .zero
-        let storyUser = stories[index]
+        viewModel.stories = playable.map { $0.element }
 
-        viewModel.currentStoryUser = storyUser.id
+        // `selectedIndex` indexes what the HOST passed, so resolve it there first
+        // and then map it across the filter. Landing on the next playable bundle
+        // (rather than on the first) is what keeps the tapped story correct when
+        // an earlier bundle was skipped.
+        let requested = stories.indices.contains(selectedIndex) ? selectedIndex : .zero
+        let index = playable.firstIndex { $0.offset >= requested } ?? playable.count - 1
 
-        if !storyUser.stories.isEmpty {
-            viewModel.stories[index].isSeen = true
-        }
+        viewModel.currentStoryUser = viewModel.stories[index].id
+        viewModel.stories[index].isSeen = true
+        updateCurrentItemIndex()
     }
 
     /// The single exit. Every path that closes the story - this one, the close button
@@ -280,14 +231,18 @@ public struct StoryView<Footer: View>: View {
     }
 
     private func stopVideo() {
+        // `NotificationCenter.default.removeObserver(self)` used to follow this.
+        // `self` is a struct, so it was bridged into a fresh `__SwiftValue` box - a
+        // full copy of the view value, `stories` and closures included - to remove a
+        // registration `StoryView` never makes. Observers of this notification are
+        // owned by `PlayerView`, which removes its own.
         NotificationCenter.default.post(name: .stopVideo, object: nil)
-        NotificationCenter.default.removeObserver(self)
     }
 }
 
 public extension StoryView where Footer == EmptyView {
     init(
-        stories: [StoryUIModel],
+        stories: [Item],
         selectedIndex: Int = 0,
         isPresented: Binding<Bool>,
         isPaused: Binding<Bool> = .constant(false),

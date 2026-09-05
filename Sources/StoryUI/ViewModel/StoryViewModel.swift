@@ -8,10 +8,13 @@
 import Foundation
 import CoreGraphics
 
-final class StoryViewModel: ObservableObject {
+/// Generic over the host's model for exactly one reason: `stories` holds the
+/// runtime state for every bundle, and each bundle carries the host's own model
+/// beside it. Nothing else in here knows or cares what `Item` is.
+final class StoryViewModel<Item: StoryUIRepresentable>: ObservableObject {
 
     @Published var currentStoryUser: String = ""
-    @Published var stories: [StoryUIModel] = []
+    @Published var stories: [StoryUIModel<Item>] = []
 
     // MARK: Interaction state
     //
@@ -60,7 +63,7 @@ final class StoryViewModel: ObservableObject {
         return duration * 0.1 // convert any second to  between 0 - 1 second
     }
 
-    func getStoryModel() -> StoryUIModel? {
+    func getStoryModel() -> StoryUIModel<Item>? {
         if let i = stories.firstIndex(where: { $0.id == currentStoryUser }) {
             return stories[i]
         }
