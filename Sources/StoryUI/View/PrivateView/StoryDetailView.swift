@@ -12,12 +12,16 @@ import AVKit
 /// `StoryDetailView.init`.
 ///
 /// `State.init(wrappedValue:)` takes a plain value, so `@State var player = AVPlayer()`
-/// constructed a real `AVPlayer` inside every single `StoryDetailView.init` - and
-/// `StoryView.body` re-runs on every frame of a dismiss drag (it reads `dragOffset`),
-/// rebuilding the whole `ForEach` because `TabView` is not lazy. At ~100 bundles that
-/// is ~100 AVPlayer allocations *per frame*, every one discarded, even on an
-/// image-only story that never reaches the `.video` branch. `StateObject`'s
-/// initializer IS `@autoclosure`, so everything here is built exactly once.
+/// constructed a real `AVPlayer` inside every single `StoryDetailView.init`. `TabView`
+/// is not lazy, so one `StoryView.body` pass builds every bundle - at ~100 bundles that
+/// is ~100 players allocated and discarded per pass, even on an image-only story that
+/// never reaches the `.video` branch.
+///
+/// It used to be far worse: `body` also read the drag offset, so it ran 60-120 times a
+/// second for the whole dismiss drag. `StoryDismissContainer` now owns that state, so
+/// `body` runs on real changes only - but a rebuild is still a rebuild, and this is
+/// still the wrong place to build a player. `StateObject`'s initializer IS
+/// `@autoclosure`, so everything here is built exactly once per realised page.
 final class StoryPlayerBox: ObservableObject {
     @Published private(set) var player = AVPlayer()
 
