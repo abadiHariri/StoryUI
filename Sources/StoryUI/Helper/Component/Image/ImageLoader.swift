@@ -48,21 +48,24 @@ final class ImageLoader: UIView {
     
     func loadImageWithUrl(_ url: String?, imageIsLoaded: @escaping () -> Void) {
 
-        guard let validatedUrl = url else {
-            print("url error")
+        // A link `URL(string:)` cannot parse never loads and never calls back, so
+        // the story would sit on this page with its progress frozen. Treated as a
+        // failed load: nothing shown, and the story moves on.
+        guard let url, let validatedUrl = URL(string: url) else {
+            releaseImage()
+            DispatchQueue.main.async {
+                imageIsLoaded()
+            }
             return
         }
 
-        if imageURL == URL(string: validatedUrl) {
+        if imageURL == validatedUrl {
             return
         }
 
-        imageURL = URL(string: validatedUrl)
+        imageURL = validatedUrl
 
         guard let imageURL else { return }
-
-        // stop video if it's playing before image request
-        NotificationCenter.default.post(name: .stopVideo, object: nil)
 
         // Read HERE, on the main thread, and pass them down. `UIScreen` and `UIView`
         // state are main-thread-only, and the decode below runs on `decodeQueue` or on
@@ -110,12 +113,22 @@ final class ImageLoader: UIView {
             with: imageURL,
             completionHandler: { [weak self] (data, response, error) in
             guard let self else { return }
-            if error != nil {
-                print(error as Any)
+            // Ours: a URL switch or the page going away. Never a failure to report -
+            // the same link may already be loading again.
+            if (error as? URLError)?.code == .cancelled { return }
+
+            // A failed load still has to end: stop the spinner and let the story run
+            // on, or it sits on this page spinning with its progress frozen. An error
+            // page is never cached as the image either.
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
+            guard error == nil, let data, let response, (200...299).contains(statusCode) else {
+                DispatchQueue.main.async {
+                    guard self.imageURL == imageURL else { return }
+                    self.activityIndicator.stopAnimating()
+                    imageIsLoaded()
+                }
                 return
             }
-
-            guard let data, let response else { return }
 
             URLCache.shared.storeCachedResponse(
                 .init(response: response, data: data),

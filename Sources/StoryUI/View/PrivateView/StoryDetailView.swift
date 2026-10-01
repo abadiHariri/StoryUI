@@ -118,8 +118,18 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
             // LEFT rewound it visibly - bars draining, media flipping back to
             // story one - while it was still sliding off screen. It gets its
             // reset when it becomes current again.
-            guard newValue == model.id else { return }
+            guard newValue == model.id else {
+                // `.stopVideo` only stops a video that is playing. One still
+                // buffering would start by itself once its data lands - with
+                // sound, on a page that is no longer showing.
+                pauseVideo()
+                return
+            }
             resetProgress()
+            // The bar starts again from zero, so the video does too. One left
+            // mid-way while paused, or already at its end, would otherwise pick up
+            // there - or sit on its last frame, where play() does nothing.
+            playerBox.player.seek(to: .zero)
             playVideo()
         }
         .onChange(of: viewModel.isPausedByDrag) { _ in
@@ -196,13 +206,18 @@ private extension StoryDetailView {
         case .video:
             VideoView(
                 videoURL: story.mediaURL,
-                state: $state,
                 player: playerBox.player,
                 contentMode: resolvedContentMode(for: story)
             ) { media, duration in
                 model.stories[index].duration = duration
                 start(index: index)
                 state = media
+                // `onChange(of: state)` stays quiet when the video before this one
+                // also ended on `.ready` - tapped past while still buffering - and
+                // this one would then never start.
+                if media == .ready {
+                    playVideo()
+                }
             }
             .onChange(of: state) { _ in
                 playVideo()
@@ -443,8 +458,11 @@ private extension StoryDetailView {
                 model.isSeen = true
             }
             if timerProgress < CGFloat(model.stories.count) {
-                if story.isReady {
+                if story.isReady, !isBuffering(story) {
                     getProgressBarFrame(duration: resolvedDuration(for: story))
+                } else {
+                    // Time spent loading or stalled is not billed to the story.
+                    lastProgressTick = nil
                 }
             } else {
                 updateStory()
@@ -503,6 +521,18 @@ private extension StoryDetailView {
     func resolvedContentMode(for story: Story) -> StoryContentMode {
         if let mode = story.config.contentMode { return mode }
         return story.config.mediaType == .image ? imageContentMode : videoContentMode
+    }
+
+    /// A streamed video holds its bar while it is still opening or has run out of
+    /// data, so the story cannot run out behind a spinner - including a video that
+    /// comes back after a tap or a swipe, whose `isReady` is already true. Read
+    /// from the player on every tick, so nothing can leave it stuck: no item, a
+    /// failed item, paused and ended all let the bar run.
+    func isBuffering(_ story: Story) -> Bool {
+        let player = playerBox.player
+        guard story.config.mediaType == .video, let item = player.currentItem else { return false }
+        return item.status == .unknown
+            || (item.status == .readyToPlay && player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
     }
 
     func getProgressBarFrame(duration: Double) {
@@ -567,7 +597,6 @@ private extension StoryDetailView {
 
         if isReady, currentUser, video {
             let current = playerBox.player
-            current.automaticallyWaitsToMinimizeStalling = false
             Task {
                 current.play()
             }

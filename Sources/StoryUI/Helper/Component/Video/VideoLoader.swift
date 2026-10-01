@@ -13,8 +13,6 @@ final class PlayerView: UIView {
 
     // MARK: Public Properties
     weak var player: AVPlayer?
-    var duration: Double = 0.0
-    var state: MediaState = .notStarted
     var mediaState: ((MediaState, Double) -> ())?
     var videoGravity: AVLayerVideoGravity = .resizeAspectFill {
         didSet { playerLayer.videoGravity = videoGravity }
@@ -24,23 +22,37 @@ final class PlayerView: UIView {
 
     // MARK: Private Properties
     private let playerLayer = AVPlayerLayer()
-    private var url: URL?
-    private let cacheManager: StoryVideoCacheManager
+    private let activityIndicator = UIActivityIndicatorView(style: .large)
 
-    private var observation: NSKeyValueObservation?
+    /// The link exactly as the host gave it. Compared as text, so a second link
+    /// that does not parse still counts as a new video rather than as the last one.
+    private var source: String?
+
+    /// The item this view put on the player. The player belongs to the page, so a
+    /// callback about any other item is stale and is dropped.
+    private var playerItem: AVPlayerItem?
+    private var duration: Double = 0.0
+    private var didReportReady: Bool = false
+    private var didFail: Bool = false
+    private var itemObservations: [NSKeyValueObservation] = []
 
     // MARK: - Initializers
     override init(frame: CGRect) {
-        self.cacheManager = StoryVideoCacheManager()
         super.init(frame: frame)
         // See ImageLoader: an offscreen pass per frame for corners that are off
         // screen. The dismiss clip supplies any rounding that is actually visible.
+        // Black while the first frame is on its way - the look the old full-screen
+        // loading cover had - without hiding the last frame during a stall.
+        backgroundColor = .black
         setupPlayer()
+        setupActivityIndicator()
+        // Once, here. This used to run for every new video, so each one stacked
+        // another set of registrations on the same view.
+        addObserverToVideo()
     }
 
     deinit {
-        observation = nil
-        player = nil
+        itemObservations.forEach { $0.invalidate() }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -56,87 +68,186 @@ final class PlayerView: UIView {
         CATransaction.commit()
     }
 
-    func startVideo(url: URL?) {
-        guard let validatedUrl = url else { return }
-        if self.url == url { return }
-        self.url = validatedUrl
-        addActivityIndicatory()
-        // stop video if it's playing before video request
-        stopVideo()
-        guard let url = url else { return }
-        cacheManager.loadVideo(from: url) { [weak self] result in
-            switch result {
-            case .success(let url):
-                self?.setupPlayer(url)
-            case .failure(let error):
-                print(error)
-            }
+    func startVideo(_ source: String) {
+        if self.source == source { return }
+        self.source = source
+        // The next video starts paused. The page decides when it plays, so a story
+        // that is paused - held, dragged, behind a host sheet - stays paused.
+        player?.pause()
+        guard let url = URL(string: source) else {
+            failInvalidURL()
+            return
         }
+        setupPlayer(url)
     }
 
+    /// Takes the item off the player the moment SwiftUI removes this view, so a
+    /// video that is still streaming stops using the network now rather than
+    /// whenever the player is finally released.
+    func releasePlayer() {
+        removeItemObservers()
+        activityIndicator.stopAnimating()
+        if let playerItem, player?.currentItem === playerItem {
+            player?.pause()
+            player?.replaceCurrentItem(with: nil)
+        }
+        playerItem = nil
+    }
 }
 
 //MARK: - Configure
 
 private extension PlayerView {
     func setupPlayer(_ url: URL) {
-        self.player?.replaceCurrentItem(with: nil)
-        self.player?.replaceCurrentItem(with: .init(url: url))
+        removeItemObservers()
+        duration = 0.0
+        didReportReady = false
+        didFail = false
 
-        observation = player?.observe(\.timeControlStatus, options: .new) { [weak self] player, change in
-            guard let self else { return }
-            if player.timeControlStatus == .playing {
-                self.removeActivityIndicatory()
-                self.state = .started
-                self.mediaState?(self.state, self.duration)
-            } else if player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
-                self.addActivityIndicatory()
-            }
-        }
+        // Only nil once `.replaceCurrentItem` has run, i.e. while the story is closing.
+        guard let player else { return }
 
-        self.player?.automaticallyWaitsToMinimizeStalling = false
-        self.getVideoLength(videoURL: url)
-        self.playerLayer.player = self.player
-        self.playerLayer.videoGravity = videoGravity
-        self.playerLayer.backgroundColor = UIColor.black.cgColor
+        // Streamed, never downloaded: the player fetches only what it is about to
+        // play, the way SallaVideoPlayerIOS plays product videos. The old path
+        // downloaded the whole file - up to 100 MB - before the first frame.
+        let item = AVPlayerItem(url: url)
+        playerItem = item
+
+        // Waits until enough is buffered and rides out short stalls by itself,
+        // instead of starting at once and stopping every few seconds on a slow
+        // network.
+        player.automaticallyWaitsToMinimizeStalling = true
+        player.replaceCurrentItem(with: item)
+
+        playerLayer.player = player
+        playerLayer.videoGravity = videoGravity
+        playerLayer.backgroundColor = UIColor.black.cgColor
         playerLayer.removeFromSuperlayer()
-        self.contentView.layer.addSublayer(self.playerLayer)
-        // The asset is a fully downloaded local file by this point, so the layer can
-        // render frame 0 without play(). Dropping the loading overlay here - rather
-        // than only in the `.playing` KVO branch below - keeps a story that is paused
-        // across the download (host `isPaused`, or a press-and-hold) from sitting
-        // behind an opaque black view and a spinner for as long as the pause lasts.
-        removeActivityIndicatory()
-        state = .ready
-        mediaState?(.ready, duration)
-        addObserverToVideo()
+        contentView.layer.addSublayer(playerLayer)
+
+        addItemObservers(item, player: player)
+        updateBufferingState()
     }
 
-    func getVideoLength(videoURL: URL) {
-        // `.duration` blocks the caller while the container is parsed. On the main
-        // thread that is a dropped frame at the start of every video story, right
-        // when a page transition is running. Load it off-thread and report the real
-        // duration when it lands; until then the story runs on the default.
-        let asset = AVURLAsset(url: videoURL)
-        if #available(iOS 16.0, *) {
-            Task { [weak self] in
-                guard let seconds = try? await asset.load(.duration).seconds,
-                      seconds.isFinite, seconds > 0 else { return }
-                await MainActor.run { self?.applyDuration(seconds) }
-            }
-        } else {
-            asset.loadValuesAsynchronously(forKeys: ["duration"]) { [weak self] in
-                let seconds = asset.duration.seconds
-                guard seconds.isFinite, seconds > 0 else { return }
-                DispatchQueue.main.async { self?.applyDuration(seconds) }
-            }
+    func addItemObservers(_ item: AVPlayerItem, player: AVPlayer) {
+        // Both fire off the main thread and are answered on it. `.initial` matters
+        // as much as `.new`: an item that settled before this ran - a bad link that
+        // fails at once - would otherwise never be reported, and the spinner would
+        // never stop.
+        itemObservations = [
+            item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                DispatchQueue.main.async { [weak self] in
+                    self?.handleStatusChange(of: item)
+                }
+            },
+            player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
+                DispatchQueue.main.async { [weak self] in
+                    self?.handleTimeControlStatusChange(of: item)
+                }
+            },
+        ]
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(failedToPlayToEndObserver(_:)),
+            name: .AVPlayerItemFailedToPlayToEndTime,
+            object: item
+        )
+    }
+
+    func removeItemObservers() {
+        itemObservations.forEach { $0.invalidate() }
+        itemObservations = []
+        NotificationCenter.default.removeObserver(self, name: .AVPlayerItemFailedToPlayToEndTime, object: nil)
+    }
+
+    func handleStatusChange(of item: AVPlayerItem) {
+        // The hop to the main thread is long enough for the page to have moved on
+        // to another video.
+        guard item === playerItem else { return }
+
+        switch item.status {
+        case .readyToPlay:
+            handleReady(item)
+        case .failed:
+            handleFailure()
+        default:
+            break
+        }
+
+        updateBufferingState()
+    }
+
+    /// The first report for a video. The story only starts counting once it has
+    /// it, and it carries the real length, so the bar never runs on a guess.
+    func handleReady(_ item: AVPlayerItem) {
+        guard !didReportReady, !didFail else { return }
+        didReportReady = true
+
+        let seconds = item.duration.seconds
+        // A container that states no length - a live stream - runs for the default
+        // rather than never.
+        duration = seconds.isFinite && seconds > 0 ? seconds : Constant.storySecond
+        mediaState?(.ready, duration)
+    }
+
+    func handleTimeControlStatusChange(of item: AVPlayerItem) {
+        guard item === playerItem else { return }
+
+        updateBufferingState()
+
+        guard player?.currentItem === item,
+              player?.timeControlStatus == .playing,
+              didReportReady,
+              !didFail
+        else { return }
+        mediaState?(.started, duration)
+    }
+
+    /// A video that cannot be played is skipped quietly: no error, no spinner left
+    /// turning. The story runs for the default length and moves on.
+    func handleFailure() {
+        guard !didFail else { return }
+        didFail = true
+
+        player?.pause()
+        duration = Constant.storySecond
+        mediaState?(.failed, duration)
+    }
+
+    /// `URL(string:)` gives nil for a link it cannot parse, and nothing would ever
+    /// call back about it. Treated as a failed video so the story moves on.
+    func failInvalidURL() {
+        releasePlayer()
+        didFail = true
+
+        // This runs inside a SwiftUI update, where the page's state must not be
+        // written, so the report goes out on the next turn - and only if this is
+        // still the link on screen.
+        let source = self.source
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.source == source else { return }
+            self.mediaState?(.failed, Constant.storySecond)
         }
     }
 
-    func applyDuration(_ seconds: Double) {
-        guard duration != seconds else { return }
-        duration = seconds
-        mediaState?(state, seconds)
+    /// Spins while there is nothing to show yet - the stream is still opening, or
+    /// it has run dry mid-play - over the last frame rather than a black cover, so
+    /// a stall reads as loading. Never for a video that failed.
+    func updateBufferingState() {
+        guard let playerItem,
+              player?.currentItem === playerItem,
+              !didFail,
+              playerItem.status != .failed
+        else {
+            activityIndicator.stopAnimating()
+            return
+        }
+
+        let isWaiting = playerItem.status != .readyToPlay
+            || player?.timeControlStatus == .waitingToPlayAtSpecifiedRate
+
+        isWaiting ? activityIndicator.startAnimating() : activityIndicator.stopAnimating()
     }
 
     func stopAndRestartVideo() {
@@ -147,7 +258,6 @@ private extension PlayerView {
         if player?.timeControlStatus == .playing {
             player?.pause()
             player?.seek(to: .zero)
-            state = .stopped
         }
     }
 
@@ -155,7 +265,6 @@ private extension PlayerView {
         if player?.timeControlStatus == .paused {
             player?.seek(to: .zero)
             player?.play()
-            state = .restart
         }
     }
 
@@ -203,31 +312,24 @@ private extension PlayerView {
 
     @objc
     func replaceCurrentItemObserver() {
-        self.player?.replaceCurrentItem(with: nil)
-        self.observation = nil
+        releasePlayer()
         self.player = nil
+    }
+
+    /// Posted on whatever thread the player was working on.
+    @objc
+    func failedToPlayToEndObserver(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, (notification.object as? AVPlayerItem) === self.playerItem else { return }
+            self.handleFailure()
+            self.updateBufferingState()
+        }
     }
 }
 
 // MARK: - Setup Func
 
 private extension PlayerView {
-    func addActivityIndicatory() {
-        removeActivityIndicatory()
-        let w = UIScreen.main.bounds.width
-        let h = UIScreen.main.bounds.height
-        let view = UIView(frame: CGRect(x: 0, y: 0, width: w, height: h))
-        view.backgroundColor = .black
-        view.tag = 999
-        self.addSubview(view)
-        let activityView = UIActivityIndicatorView(style: .large)
-        activityView.color = UIColor.lightGray.withAlphaComponent(0.7)
-        activityView.frame = CGRect(x: w / 2, y: h / 2, width: .zero, height: .zero)
-        view.addSubview(activityView)
-        addConst(view: activityView)
-        activityView.startAnimating()
-    }
-
     func setupPlayer() {
         addSubview(contentView)
         contentView.translatesAutoresizingMaskIntoConstraints = false
@@ -239,19 +341,16 @@ private extension PlayerView {
         ])
     }
 
-    func removeActivityIndicatory() {
-        self.subviews.forEach { (view) in
-            if view.tag == 999 {
-                view.removeFromSuperview()
-            }
-        }
-    }
-
-    func addConst(view: UIActivityIndicatorView) {
-        view.translatesAutoresizingMaskIntoConstraints = false
+    /// Installed once, above the video. This used to build a fresh full-screen
+    /// cover and spinner on every load and pin the spinner with `superview!`.
+    func setupActivityIndicator() {
+        activityIndicator.color = UIColor.lightGray.withAlphaComponent(0.7)
+        activityIndicator.hidesWhenStopped = true
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(activityIndicator)
         NSLayoutConstraint.activate([
-            view.centerXAnchor.constraint(equalTo: view.superview!.centerXAnchor),
-            view.centerYAnchor.constraint(equalTo: view.superview!.centerYAnchor)
+            activityIndicator.centerXAnchor.constraint(equalTo: centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 }

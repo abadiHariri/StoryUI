@@ -32,6 +32,7 @@ enum MediaState {
     case restart
     case ready
     case stopped
+    case failed
 }
 
 
