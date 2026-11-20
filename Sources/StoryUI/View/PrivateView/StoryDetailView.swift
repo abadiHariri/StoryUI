@@ -103,6 +103,7 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .overlay(
                 getProgressBar(with: index)
+                    .padding(.top, max(0, Constant.chromeMinimumTopInset - proxy.safeAreaInsets.top))
                 ,alignment: .top
             )
             .storyTransition(
@@ -131,6 +132,10 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
             // there - or sit on its last frame, where play() does nothing.
             playerBox.player.seek(to: .zero)
             playVideo()
+        }
+        .onChange(of: timerProgress) { progress in
+            // Read back if the pager builds this page again (a size change).
+            viewModel.saveProgress(progress, for: model.id)
         }
         .onChange(of: viewModel.isPausedByDrag) { _ in
             // A dismiss drag freezes the story for its whole duration. Going
@@ -396,7 +401,7 @@ private extension StoryDetailView {
     /// width to the right. Every transition style is a function of this.
     func getProgress(proxy: GeometryProxy) -> CGFloat {
         guard proxy.size.width > 0 else { return 0 }
-        return proxy.frame(in: .global).minX / proxy.size.width
+        return proxy.frame(in: .named(Constant.pagerCoordinateSpace)).minX / proxy.size.width
     }
 
     func resetProgress() {

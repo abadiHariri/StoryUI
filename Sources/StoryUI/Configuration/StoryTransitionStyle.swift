@@ -46,7 +46,7 @@ extension View {
     ///     +1 is one full width to the right, -1 one full width to the left.
     ///   - width: the page width, used by styles that translate.
     ///   - isFrozen: true while a dismiss drag is running. Position is read from
-    ///     `.global` frames, so the dismiss transform would otherwise feed back
+    ///     page frames, so the dismiss transform would otherwise feed back
     ///     into the transition and distort every page as the story shrinks.
     @ViewBuilder
     func storyTransition(

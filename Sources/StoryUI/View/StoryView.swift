@@ -36,6 +36,11 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     /// `viewModel.currentStoryUser` so the footer lookup is O(1) per render.
     @State private var currentItemIndex: Int = 0
 
+    /// The story's size, and the pager's identity: bumped when that size changes so
+    /// the pager is built again. See `pagerSizeChanged(_:)`.
+    @State private var pagerSize: CGSize = .zero
+    @State private var pagerID: Int = 0
+
     /// Stories and isPresented required, selectedIndex is optional default: 0
     /// - Parameters:
     ///   - stories: all stories to show
@@ -96,6 +101,7 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
             // ForEach over every bundle and the footer, 60-120 times a second.
             StoryDismissContainer(
                 style: dismissStyle,
+                containerSize: pagerSize,
                 isDragToDismissEnabled: isDragToDismissEnabled,
                 onTouchActiveChanged: viewModel.setTouchActive,
                 onDragBegan: viewModel.beginDismissDrag,
@@ -120,13 +126,16 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                                 imageDuration: imageDuration,
                                 imageContentMode: imageContentMode,
                                 videoContentMode: videoContentMode,
-                                onDismiss: onDismiss
+                                onDismiss: onDismiss,
+                                timerProgress: viewModel.resumeProgress(for: model.id)
                             )
                             .addGeometryGroup()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                             .addGeometryGroup()
                         }
                     }
+                    .id(pagerID)
+                    .coordinateSpace(name: Constant.pagerCoordinateSpace)
                     .addGeometryGroup()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     .addGeometryGroup()
@@ -148,11 +157,26 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                     .animation(.easeOut(duration: 0.2), value: viewModel.isHolding)
                     .animation(.easeOut(duration: 0.2), value: viewModel.isDragging)
                 }
-                .ignoresSafeArea()
+                // Full bleed top and bottom only. Stretched over a side inset too (the
+                // foldable iPhone's status column, which a host keeps the story beside),
+                // the pages grew wider than the pager's place and every page sat shifted
+                // by the inset, the next one showing at the edge.
+                .ignoresSafeArea(edges: .vertical)
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
-            .ignoresSafeArea()
+            .ignoresSafeArea(edges: .vertical)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear {
+                            pagerSizeChanged(proxy.size)
+                        }
+                        .onChange(of: proxy.size) { size in
+                            pagerSizeChanged(size)
+                        }
+                }
+            )
             .onAppear() {
                 startStory()
             }
@@ -189,6 +213,20 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     /// Resolved once per page change rather than once per render.
     private func updateCurrentItemIndex() {
         currentItemIndex = stories.firstIndex { $0.storyId == viewModel.currentStoryUser } ?? 0
+    }
+
+    /// A page `TabView` keeps its scroll offset when its size changes, so after a
+    /// rotation, a fold or a window resize every page sat shifted: the next story
+    /// showed at one edge and the close button could end up under the status bar.
+    /// Building the pager again lays it out afresh on the current story, and every
+    /// page comes back on the story it was showing. The first size is not a change.
+    private func pagerSizeChanged(_ size: CGSize) {
+        let size = CGSize(width: size.width.rounded(), height: size.height.rounded())
+        guard size != pagerSize else { return }
+        if pagerSize != .zero {
+            pagerID += 1
+        }
+        pagerSize = size
     }
 
     /// Builds the runtime state for every bundle, exactly once.

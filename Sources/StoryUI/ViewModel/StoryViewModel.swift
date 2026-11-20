@@ -25,7 +25,7 @@ final class StoryViewModel<Item: StoryUIRepresentable>: ObservableObject {
     /// True while a dismiss drag is visually in progress - including the snap-back
     /// animation, which is why it is not simply "finger is down".
     ///
-    /// Page transitions read `.global` frames, which the dismiss scale and offset
+    /// Page transitions read page frames, which the dismiss scale and offset can
     /// move. Without holding this true until the snap-back has settled, the spring
     /// feeds back into the page transition and the content visibly judders.
     @Published var isDragging: Bool = false
@@ -57,7 +57,21 @@ final class StoryViewModel<Item: StoryUIRepresentable>: ObservableObject {
 
     private var scheduled: [DispatchWorkItem] = []
 
+    /// How far each bundle's bar had got, so a page the pager builds again after a
+    /// size change comes back on the story it was showing. Not published: written
+    /// on every tick, read only when a page is built.
+    private var progressByBundle: [String: CGFloat] = [:]
+
     deinit { cancelScheduled() }
+
+    func saveProgress(_ progress: CGFloat, for bundleID: String) {
+        progressByBundle[bundleID] = progress
+    }
+
+    /// The start of the story the bundle was on: its media starts again with the page.
+    func resumeProgress(for bundleID: String) -> CGFloat {
+        (progressByBundle[bundleID] ?? 0).rounded(.down)
+    }
 
     func getVideoProgressBarFrame(duration: Double) -> Double {
         return duration * 0.1 // convert any second to  between 0 - 1 second
