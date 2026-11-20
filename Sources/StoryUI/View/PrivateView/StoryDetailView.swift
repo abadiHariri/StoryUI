@@ -51,6 +51,8 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
     /// Reported before `isPresented` flips, on every path that closes the story.
     /// See `StoryView.onDismiss`.
     var onDismiss: (() -> Void)? = nil
+    /// The story's side safe area: the progress bar and the close button keep out of it.
+    var sideInsets = EdgeInsets()
 
     @State var timerProgress: CGFloat = 0
 
@@ -101,9 +103,12 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
             }
             .ignoresSafeArea()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(PagerInsetAdjustment())
             .overlay(
                 getProgressBar(with: index)
                     .padding(.top, max(0, Constant.chromeMinimumTopInset - proxy.safeAreaInsets.top))
+                    .padding(.leading, sideInsets.leading)
+                    .padding(.trailing, sideInsets.trailing)
                 ,alignment: .top
             )
             .storyTransition(

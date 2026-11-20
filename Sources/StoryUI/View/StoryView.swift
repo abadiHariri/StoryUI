@@ -41,6 +41,11 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     @State private var pagerSize: CGSize = .zero
     @State private var pagerID: Int = 0
 
+    /// The safe area on the story's sides (the foldable iPhone's status column).
+    /// The media runs under it; the progress bar, the close button and the footer
+    /// keep out of it.
+    @State private var sideInsets = EdgeInsets()
+
     /// Stories and isPresented required, selectedIndex is optional default: 0
     /// - Parameters:
     ///   - stories: all stories to show
@@ -127,6 +132,7 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                                 imageContentMode: imageContentMode,
                                 videoContentMode: videoContentMode,
                                 onDismiss: onDismiss,
+                                sideInsets: sideInsets,
                                 timerProgress: viewModel.resumeProgress(for: model.id)
                             )
                             .addGeometryGroup()
@@ -148,6 +154,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                         
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.leading, sideInsets.leading)
+                    .padding(.trailing, sideInsets.trailing)
                     .addGeometryGroup()
                     // Hidden while holding, and for the whole dismiss drag.
                     // Driven by booleans, never by the per-frame drag offset:
@@ -157,23 +165,26 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                     .animation(.easeOut(duration: 0.2), value: viewModel.isHolding)
                     .animation(.easeOut(duration: 0.2), value: viewModel.isDragging)
                 }
-                // Full bleed top and bottom only. Stretched over a side inset too (the
-                // foldable iPhone's status column, which a host keeps the story beside),
-                // the pages grew wider than the pager's place and every page sat shifted
-                // by the inset, the next one showing at the edge.
-                .ignoresSafeArea(edges: .vertical)
+                // Full bleed, the side safe area included: the media runs under the
+                // foldable iPhone's status column, and every page stops the pager from
+                // adjusting for it (`PagerInsetAdjustment`).
+                .ignoresSafeArea()
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
-            .ignoresSafeArea(edges: .vertical)
+            .ignoresSafeArea()
             .background(
                 GeometryReader { proxy in
                     Color.clear
                         .onAppear {
                             pagerSizeChanged(proxy.size)
+                            sideInsetsChanged(proxy.safeAreaInsets)
                         }
                         .onChange(of: proxy.size) { size in
                             pagerSizeChanged(size)
+                        }
+                        .onChange(of: proxy.safeAreaInsets) { insets in
+                            sideInsetsChanged(insets)
                         }
                 }
             )
@@ -227,6 +238,13 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
             pagerID += 1
         }
         pagerSize = size
+    }
+
+    /// Only the sides: the top and bottom are each page's own safe area.
+    private func sideInsetsChanged(_ insets: EdgeInsets) {
+        let sides = EdgeInsets(top: 0, leading: insets.leading, bottom: 0, trailing: insets.trailing)
+        guard sides != sideInsets else { return }
+        sideInsets = sides
     }
 
     /// Builds the runtime state for every bundle, exactly once.
