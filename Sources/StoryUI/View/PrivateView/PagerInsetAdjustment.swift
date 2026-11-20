@@ -38,22 +38,32 @@ final class PagerInsetAdjustmentView: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
-        // The page is attached to the pager on the next turn, not yet here.
-        DispatchQueue.main.async { [weak self] in
-            self?.stopPagerInsetAdjustment()
+        // Before the pager settles its first page when the page is already inside it,
+        // else on the next turn.
+        if !stopPagerInsetAdjustment() {
+            DispatchQueue.main.async { [weak self] in
+                self?.stopPagerInsetAdjustment()
+            }
         }
     }
 
-    private func stopPagerInsetAdjustment() {
+    @discardableResult
+    private func stopPagerInsetAdjustment() -> Bool {
         var view = superview
         while let current = view {
             if let scrollView = current as? UIScrollView, scrollView.isPagingEnabled {
-                if scrollView.contentInsetAdjustmentBehavior != .never {
-                    scrollView.contentInsetAdjustmentBehavior = .never
+                guard scrollView.contentInsetAdjustmentBehavior != .never else { return true }
+                scrollView.contentInsetAdjustmentBehavior = .never
+                // A page settled with the inset sits half of it off: back on a whole page.
+                let width = scrollView.bounds.width
+                if width > 0, !scrollView.isDragging, !scrollView.isDecelerating {
+                    let page = (scrollView.contentOffset.x / width).rounded()
+                    scrollView.setContentOffset(CGPoint(x: page * width, y: scrollView.contentOffset.y), animated: false)
                 }
-                return
+                return true
             }
             view = current.superview
         }
+        return false
     }
 }
