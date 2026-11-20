@@ -42,8 +42,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     @State private var pagerID: Int = 0
 
     /// The safe area on the story's sides (the foldable iPhone's status column).
-    /// The media runs under it; the progress bar, the close button and the footer
-    /// keep out of it.
+    /// The media and the footer run under it, the footer centred on the whole
+    /// window; the progress bar and the close button keep out of it.
     @State private var sideInsets = EdgeInsets()
 
     /// Stories and isPresented required, selectedIndex is optional default: 0
@@ -154,8 +154,6 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                         
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .padding(.leading, sideInsets.leading)
-                    .padding(.trailing, sideInsets.trailing)
                     .addGeometryGroup()
                     // Hidden while holding, and for the whole dismiss drag.
                     // Driven by booleans, never by the per-frame drag offset:
