@@ -110,7 +110,7 @@ struct StoryDetailView<Item: StoryUIRepresentable, CloseButton: View>: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .background(PagerInsetAdjustment())
             .overlay(
-                // Measured across the whole window: the page itself keeps out of a side safe area
+                // Measured across the whole window, like the page
                 GeometryReader { chromeProxy in
                     getProgressBar(with: index, insets: chromeInsets(width: chromeProxy.size.width, sides: sideInsets))
                         .padding(.top, max(0, Constant.chromeMinimumTopInset - proxy.safeAreaInsets.top))
@@ -125,6 +125,8 @@ struct StoryDetailView<Item: StoryUIRepresentable, CloseButton: View>: View {
                 isFrozen: viewModel.isDragging
             )
         }
+        // The whole page, a side safe area included: at rest the page reads 0 whichever side the column is on
+        .ignoresSafeArea(.container, edges: .horizontal)
         .onChange(of: viewModel.currentStoryUser) { newValue in
             NotificationCenter.default.post(name: .stopVideo, object: nil)
             // Only the page becoming current resets. Resetting the page being
