@@ -106,7 +106,7 @@ enum Constant {
 
     /// How long the snap-back spring takes. Page transitions stay frozen for
     /// exactly this long after a cancelled drag, so the spring cannot feed back
-    /// into them through the `.global` frames they read.
+    /// into them through the page frames they read.
     static let dismissSnapBackDuration: TimeInterval = 0.32
 
     /// After a cancelled drag the story waits before playing again, rather than
