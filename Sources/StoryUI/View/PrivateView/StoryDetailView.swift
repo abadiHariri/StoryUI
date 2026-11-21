@@ -577,6 +577,9 @@ private extension StoryDetailView {
 
     func dissmis() {
         requestDismiss()
+        // A host that keeps the story drawn while its own presentation closes (a zoom
+        // cover) keeps its video on screen; the players are released as the views go away.
+        guard !isPresented else { return }
         NotificationCenter.default.post(name: .replaceCurrentItem, object: nil)
     }
 
