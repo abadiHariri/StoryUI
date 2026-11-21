@@ -12,8 +12,10 @@ import UIKit
 /// inset for the safe area on its scrolling axis. Across a side inset (the foldable
 /// iPhone's status column) that centred every page in the safe part, so each page
 /// sat shifted by half the inset with the next one showing at the edge. The story
-/// draws over the safe area itself, so the pager must not adjust for it. Placed
-/// inside a page; it does nothing when no paging scroll view encloses it.
+/// draws over the safe area itself, so the pager must not adjust for it. Without the
+/// adjustment the pager keeps its page through a rotation, a fold or a window resize
+/// on its own. Placed inside a page; it does nothing when no paging scroll view
+/// encloses it.
 struct PagerInsetAdjustment: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PagerInsetAdjustmentView {

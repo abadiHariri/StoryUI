@@ -36,10 +36,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     /// `viewModel.currentStoryUser` so the footer lookup is O(1) per render.
     @State private var currentItemIndex: Int = 0
 
-    /// The story's size, and the pager's identity: bumped when that size changes so
-    /// the pager is built again. See `pagerSizeChanged(_:)`.
+    /// The story's size, for the dismiss container. See `pagerSizeChanged(_:)`.
     @State private var pagerSize: CGSize = .zero
-    @State private var pagerID: Int = 0
 
     /// The safe area on the story's sides (the foldable iPhone's status column).
     /// The media and the footer run under it, the footer centred on the whole
@@ -132,15 +130,13 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                                 imageContentMode: imageContentMode,
                                 videoContentMode: videoContentMode,
                                 onDismiss: onDismiss,
-                                sideInsets: sideInsets,
-                                timerProgress: viewModel.resumeProgress(for: model.id)
+                                sideInsets: sideInsets
                             )
                             .addGeometryGroup()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                             .addGeometryGroup()
                         }
                     }
-                    .id(pagerID)
                     .coordinateSpace(name: Constant.pagerCoordinateSpace)
                     .addGeometryGroup()
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -224,17 +220,12 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
         currentItemIndex = stories.firstIndex { $0.storyId == viewModel.currentStoryUser } ?? 0
     }
 
-    /// A page `TabView` keeps its scroll offset when its size changes, so after a
-    /// rotation, a fold or a window resize every page sat shifted: the next story
-    /// showed at one edge and the close button could end up under the status bar.
-    /// Building the pager again lays it out afresh on the current story, and every
-    /// page comes back on the story it was showing. The first size is not a change.
+    /// The pager is never built again on a rotation, a fold or a window resize: the
+    /// story, its progress and its video carry on, and the pager keeps its page (see
+    /// `PagerInsetAdjustment`).
     private func pagerSizeChanged(_ size: CGSize) {
         let size = CGSize(width: size.width.rounded(), height: size.height.rounded())
         guard size != pagerSize else { return }
-        if pagerSize != .zero {
-            pagerID += 1
-        }
         pagerSize = size
     }
 

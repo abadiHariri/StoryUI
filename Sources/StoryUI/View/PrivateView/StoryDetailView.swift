@@ -138,10 +138,6 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
             playerBox.player.seek(to: .zero)
             playVideo()
         }
-        .onChange(of: timerProgress) { progress in
-            // Read back if the pager builds this page again (a size change).
-            viewModel.saveProgress(progress, for: model.id)
-        }
         .onChange(of: viewModel.isPausedByDrag) { _ in
             // A dismiss drag freezes the story for its whole duration. Going
             // through the one edge detector means a snap-back resumes, while a
