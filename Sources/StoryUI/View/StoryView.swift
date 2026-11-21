@@ -12,8 +12,9 @@ import AVFoundation
 ///
 /// `Item` is whatever type the host conformed to `StoryUIRepresentable`. It goes
 /// in through `stories` and comes back out through `footer` unchanged - there is
-/// no model to build, nothing to map and nothing to look back up.
-public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
+/// no model to build, nothing to map and nothing to look back up. `CloseButton` is
+/// the host's own close button, `StoryCloseButton` when it gives none.
+public struct StoryView<Item: StoryUIRepresentable, Footer: View, CloseButton: View>: View {
 
     @StateObject private var viewModel = StoryViewModel<Item>()
     @Binding private var isPresented: Bool
@@ -23,6 +24,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     private var stories: [Item]
     private var selectedIndex: Int
     private var footer: (Item) -> Footer
+    private var closeButton: (@escaping () -> Void) -> CloseButton
+    private var chromeMaxWidth: CGFloat
     private var isDragToDismissEnabled: Bool
     private var transitionStyle: StoryTransitionStyle
     private var dismissStyle: StoryDismissStyle
@@ -40,8 +43,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     @State private var pagerSize: CGSize = .zero
 
     /// The safe area on the story's sides (the foldable iPhone's status column).
-    /// The media and the footer run under it, the footer centred on the whole
-    /// window; the progress bar and the close button keep out of it.
+    /// The media and the footer run under it; the close button keeps out of it, and
+    /// so does the progress bar when centring it would reach under it.
     @State private var sideInsets = EdgeInsets()
 
     /// Stories and isPresented required, selectedIndex is optional default: 0
@@ -57,6 +60,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     ///     it via `StoryConfiguration(mediaType:imageDuration:)`. Video always runs its own length.
     ///   - imageContentMode: how images are scaled into the frame; per-story override via `StoryConfiguration`
     ///   - videoContentMode: how video is scaled into the frame; per-story override via `StoryConfiguration`
+    ///   - chromeMaxWidth: the widest the progress bar may be; it is centred on the window, or in the safe
+    ///     part when centring would reach under a side safe area
     ///   - onDismissProgress: 0...1 as the story is dragged away, for hosts that fade their own chrome
     ///   - onDismiss: called on EVERY path that closes the story - a committed dismiss
     ///     drag, the close button, and running past the last story - and always BEFORE
@@ -65,6 +70,9 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     ///     `if isPresented`, so the flip removes this subtree, and an `onChange` edge on
     ///     the binding can be coalesced away when the main thread is loaded - leaving the
     ///     presentation mounted with nothing left to remove it.
+    ///   - closeButton: the host's close button, drawn under the progress bar at the window's trailing
+    ///     edge (beside a side safe area) with its own size and padding; calling the closure it is given
+    ///     closes the story like the default button
     ///   - footer: host-supplied overlay rendered at the bottom of the currently visible story
     public init(
         stories: [Item],
@@ -77,8 +85,10 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
         imageDuration: TimeInterval = 5,
         imageContentMode: StoryContentMode = .fit,
         videoContentMode: StoryContentMode = .fill,
+        chromeMaxWidth: CGFloat = .infinity,
         onDismissProgress: ((CGFloat) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
+        @ViewBuilder closeButton: @escaping (_ dismiss: @escaping () -> Void) -> CloseButton,
         @ViewBuilder footer: @escaping (Item) -> Footer
     ) {
         self.stories = stories
@@ -93,6 +103,8 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
         self.videoContentMode = videoContentMode
         self.onDismissProgress = onDismissProgress
         self.onDismiss = onDismiss
+        self.closeButton = closeButton
+        self.chromeMaxWidth = chromeMaxWidth
         self.footer = footer
     }
 
@@ -130,7 +142,9 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
                                 imageContentMode: imageContentMode,
                                 videoContentMode: videoContentMode,
                                 onDismiss: onDismiss,
-                                sideInsets: sideInsets
+                                chromeMaxWidth: chromeMaxWidth,
+                                sideInsets: sideInsets,
+                                closeButton: closeButton
                             )
                             .addGeometryGroup()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -285,7 +299,7 @@ public struct StoryView<Item: StoryUIRepresentable, Footer: View>: View {
     }
 }
 
-public extension StoryView where Footer == EmptyView {
+public extension StoryView where CloseButton == StoryCloseButton {
     init(
         stories: [Item],
         selectedIndex: Int = 0,
@@ -297,6 +311,44 @@ public extension StoryView where Footer == EmptyView {
         imageDuration: TimeInterval = 5,
         imageContentMode: StoryContentMode = .fit,
         videoContentMode: StoryContentMode = .fill,
+        chromeMaxWidth: CGFloat = .infinity,
+        onDismissProgress: ((CGFloat) -> Void)? = nil,
+        onDismiss: (() -> Void)? = nil,
+        @ViewBuilder footer: @escaping (Item) -> Footer
+    ) {
+        self.init(
+            stories: stories,
+            selectedIndex: selectedIndex,
+            isPresented: isPresented,
+            isPaused: isPaused,
+            isDragToDismissEnabled: isDragToDismissEnabled,
+            transitionStyle: transitionStyle,
+            dismissStyle: dismissStyle,
+            imageDuration: imageDuration,
+            imageContentMode: imageContentMode,
+            videoContentMode: videoContentMode,
+            chromeMaxWidth: chromeMaxWidth,
+            onDismissProgress: onDismissProgress,
+            onDismiss: onDismiss,
+            closeButton: { dismiss in StoryCloseButton(action: dismiss) },
+            footer: footer
+        )
+    }
+}
+
+public extension StoryView where Footer == EmptyView, CloseButton == StoryCloseButton {
+    init(
+        stories: [Item],
+        selectedIndex: Int = 0,
+        isPresented: Binding<Bool>,
+        isPaused: Binding<Bool> = .constant(false),
+        isDragToDismissEnabled: Bool = true,
+        transitionStyle: StoryTransitionStyle = .cube(),
+        dismissStyle: StoryDismissStyle = .scale(),
+        imageDuration: TimeInterval = 5,
+        imageContentMode: StoryContentMode = .fit,
+        videoContentMode: StoryContentMode = .fill,
+        chromeMaxWidth: CGFloat = .infinity,
         onDismissProgress: ((CGFloat) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil
     ) {
@@ -311,6 +363,7 @@ public extension StoryView where Footer == EmptyView {
             imageDuration: imageDuration,
             imageContentMode: imageContentMode,
             videoContentMode: videoContentMode,
+            chromeMaxWidth: chromeMaxWidth,
             onDismissProgress: onDismissProgress,
             onDismiss: onDismiss
         ) { _ in EmptyView() }
