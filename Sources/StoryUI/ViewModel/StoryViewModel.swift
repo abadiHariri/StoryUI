@@ -25,7 +25,7 @@ final class StoryViewModel<Item: StoryUIRepresentable>: ObservableObject {
     /// True while a dismiss drag is visually in progress - including the snap-back
     /// animation, which is why it is not simply "finger is down".
     ///
-    /// Page transitions read `.global` frames, which the dismiss scale and offset
+    /// Page transitions read page frames, which the dismiss scale and offset can
     /// move. Without holding this true until the snap-back has settled, the spring
     /// feeds back into the page transition and the content visibly judders.
     @Published var isDragging: Bool = false

@@ -14,6 +14,18 @@ enum Constant {
     static var storySecond: Double = 5.0
     static let progressBarSpacing: CGFloat = 6
 
+    // MARK: Layout
+
+    /// The least space above the progress bar. A window whose status bar is not on
+    /// top (the foldable iPhone's side status column) has no top safe area, and the
+    /// bar sat on the screen's edge.
+    static let chromeMinimumTopInset: CGFloat = 16
+
+    /// The pager's coordinate space. Transitions read each page's offset in it rather
+    /// than in the window, so a story laid out away from the window's leading edge
+    /// rests at full size.
+    static let pagerCoordinateSpace = "StoryUIPager"
+
     // MARK: Press-and-hold to pause
 
     /// How long a finger must stay down before the story pauses. UIKit's 0.5s
@@ -94,7 +106,7 @@ enum Constant {
 
     /// How long the snap-back spring takes. Page transitions stay frozen for
     /// exactly this long after a cancelled drag, so the spring cannot feed back
-    /// into them through the `.global` frames they read.
+    /// into them through the page frames they read.
     static let dismissSnapBackDuration: TimeInterval = 0.32
 
     /// After a cancelled drag the story waits before playing again, rather than

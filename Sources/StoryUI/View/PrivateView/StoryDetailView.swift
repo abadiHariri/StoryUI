@@ -36,8 +36,8 @@ final class StoryPlayerBox: ObservableObject {
 /// Generic over the host's model purely so it can hold the same
 /// `StoryUIModel<Item>` the view model does. Nothing in here reads `Item` -
 /// the media, the runtime state and every timing decision come from
-/// `model.stories`, exactly as before.
-struct StoryDetailView<Item: StoryUIRepresentable>: View {
+/// `model.stories`, exactly as before. `CloseButton` is the host's close button.
+struct StoryDetailView<Item: StoryUIRepresentable, CloseButton: View>: View {
     // MARK: Public Properties
     @ObservedObject var viewModel: StoryViewModel<Item>
 
@@ -51,6 +51,13 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
     /// Reported before `isPresented` flips, on every path that closes the story.
     /// See `StoryView.onDismiss`.
     var onDismiss: (() -> Void)? = nil
+    /// See `StoryView.chromeMaxWidth`.
+    var chromeMaxWidth: CGFloat = .infinity
+    /// The story's side safe area, measured by `StoryView` (a reader spanning it reports none):
+    /// the close button keeps out of it, the progress bar when centring would reach under it.
+    var sideInsets = EdgeInsets()
+    /// See `StoryView.closeButton`.
+    let closeButton: (@escaping () -> Void) -> CloseButton
 
     @State var timerProgress: CGFloat = 0
 
@@ -101,8 +108,14 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
             }
             .ignoresSafeArea()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(PagerInsetAdjustment())
             .overlay(
-                getProgressBar(with: index)
+                // Measured across the whole window, like the page
+                GeometryReader { chromeProxy in
+                    getProgressBar(with: index, insets: chromeInsets(width: chromeProxy.size.width, sides: sideInsets))
+                        .padding(.top, max(0, Constant.chromeMinimumTopInset - proxy.safeAreaInsets.top))
+                }
+                .ignoresSafeArea(.container, edges: .horizontal)
                 ,alignment: .top
             )
             .storyTransition(
@@ -112,6 +125,8 @@ struct StoryDetailView<Item: StoryUIRepresentable>: View {
                 isFrozen: viewModel.isDragging
             )
         }
+        // The whole page, a side safe area included: at rest the page reads 0 whichever side the column is on
+        .ignoresSafeArea(.container, edges: .horizontal)
         .onChange(of: viewModel.currentStoryUser) { newValue in
             NotificationCenter.default.post(name: .stopVideo, object: nil)
             // Only the page becoming current resets. Resetting the page being
@@ -226,7 +241,7 @@ private extension StoryDetailView {
     }
 
     @ViewBuilder
-    func getProgressBar(with index: Int) -> some View {
+    func getProgressBar(with index: Int, insets: EdgeInsets) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: Constant.progressBarSpacing) {
                 ForEach(model.stories.indices) { index in
@@ -237,8 +252,13 @@ private extension StoryDetailView {
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.leading, insets.leading)
+            .padding(.trailing, insets.trailing)
 
+            // At the window's trailing edge, beside a side safe area
             closeIcon()
+                .padding(.leading, sideInsets.leading)
+                .padding(.trailing, sideInsets.trailing)
                 .opacity(isHolding || viewModel.isDragging ? 0 : 1)
         }
         // The progress bar survives a hold - it is what shows the story frozen -
@@ -248,19 +268,25 @@ private extension StoryDetailView {
         .animation(.easeOut(duration: 0.2), value: viewModel.isDragging)
     }
 
+    /// The progress bar's insets: at most `chromeMaxWidth` wide and centred on the
+    /// window, like a capped footer. When that would reach under a side safe area (the
+    /// folded foldable iPhone's status column), centred in the safe part instead.
+    func chromeInsets(width: CGFloat, sides: EdgeInsets) -> EdgeInsets {
+        let centred = max(0, (width - min(chromeMaxWidth, width)) / 2)
+        guard centred < max(sides.leading, sides.trailing) else {
+            return EdgeInsets(top: 0, leading: centred, bottom: 0, trailing: centred)
+        }
+        let safeWidth = max(0, width - sides.leading - sides.trailing)
+        let inset = max(0, (safeWidth - min(chromeMaxWidth, safeWidth)) / 2)
+        return EdgeInsets(top: 0, leading: sides.leading + inset, bottom: 0, trailing: sides.trailing + inset)
+    }
+
     @ViewBuilder
     func closeIcon() -> some View {
         HStack {
             Spacer()
-            Button {
+            closeButton {
                 requestDismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .renderingMode(.template)
-                    .foregroundColor(.white)
-                    .frame(width: 24, height: 24)
-                    .padding(.horizontal, 8)
-                    .padding(.top)
             }
         }
     }
@@ -396,7 +422,7 @@ private extension StoryDetailView {
     /// width to the right. Every transition style is a function of this.
     func getProgress(proxy: GeometryProxy) -> CGFloat {
         guard proxy.size.width > 0 else { return 0 }
-        return proxy.frame(in: .global).minX / proxy.size.width
+        return proxy.frame(in: .named(Constant.pagerCoordinateSpace)).minX / proxy.size.width
     }
 
     func resetProgress() {
@@ -553,6 +579,9 @@ private extension StoryDetailView {
 
     func dissmis() {
         requestDismiss()
+        // A host that keeps the story drawn while its own presentation closes (a zoom
+        // cover) keeps its video on screen; the players are released as the views go away.
+        guard !isPresented else { return }
         NotificationCenter.default.post(name: .replaceCurrentItem, object: nil)
     }
 

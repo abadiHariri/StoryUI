@@ -26,6 +26,8 @@ import UIKit
 struct StoryDismissContainer<Content: View>: View {
 
     let style: StoryDismissStyle
+    /// The story's own size: a window or a fold can make it smaller than the screen.
+    let containerSize: CGSize
     /// The host's `isDragToDismissEnabled`. Combined with `isFlyingAway` here.
     let isDragToDismissEnabled: Bool
 
@@ -46,6 +48,7 @@ struct StoryDismissContainer<Content: View>: View {
 
     init(
         style: StoryDismissStyle,
+        containerSize: CGSize,
         isDragToDismissEnabled: Bool,
         onTouchActiveChanged: @escaping (Bool) -> Void,
         onDragBegan: @escaping () -> Void,
@@ -56,6 +59,7 @@ struct StoryDismissContainer<Content: View>: View {
         @ViewBuilder content: () -> Content
     ) {
         self.style = style
+        self.containerSize = containerSize
         self.isDragToDismissEnabled = isDragToDismissEnabled
         self.onTouchActiveChanged = onTouchActiveChanged
         self.onDragBegan = onDragBegan
@@ -102,7 +106,10 @@ struct StoryDismissContainer<Content: View>: View {
 
     // MARK: Drag to dismiss
 
-    private var effectiveSize: CGSize { UIScreen.main.bounds.size }
+    /// The screen only until the story has been measured.
+    private var effectiveSize: CGSize {
+        containerSize == .zero ? UIScreen.main.bounds.size : containerSize
+    }
 
     /// One resolved value for the whole drag, so every modifier above reads from a
     /// single source and cannot disagree with the others mid-animation.
